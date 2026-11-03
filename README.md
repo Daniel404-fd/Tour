@@ -11,9 +11,9 @@
 
 ## Как получить готовые файлы
 
-GitHub собирает всё сам при каждом изменении: вкладка **Actions** → последний запуск
-**Android** или **Windows** → внизу раздел **Artifacts**:
-`HabitTracker-android` (внутри `HabitTracker.apk`) и `HabitTracker-windows` (`HabitTracker.exe`).
+GitHub собирает всё сам при каждом изменении и выкладывает в релиз **«Последняя версия»**
+(справа на главной странице репозитория → Releases): `HabitTracker.apk` — для телефона,
+`HabitTracker.exe` — для Windows.
 
 ### Установка на телефон
 

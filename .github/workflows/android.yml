@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,3 +44,11 @@ jobs:
         with:
           name: HabitTracker-android
           path: android/HabitTracker.apk
+      - name: Выложить в релиз «Последняя версия»
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Последняя версия
+          body: Файлы собираются автоматически при каждом изменении. HabitTracker.apk — для телефона, HabitTracker.exe — для Windows.
+          files: android/HabitTracker.apk

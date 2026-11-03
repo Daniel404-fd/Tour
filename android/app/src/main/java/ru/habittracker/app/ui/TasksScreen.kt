@@ -24,7 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.outlined.Label
+import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
@@ -97,7 +97,7 @@ fun TasksScreen(nav: Nav) {
                     Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Задачи", style = Header, color = t.text, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { topicsDialog = true }) { Icon(Icons.Outlined.Label, "Темы") }
+                        IconButton(onClick = { topicsDialog = true }) { Icon(Icons.AutoMirrored.Outlined.Label, "Темы") }
                     }
                     val active = all.count { !it.done && !it.archived }
                     val overdue = all.count { Logic.isOverdue(it, today) }
