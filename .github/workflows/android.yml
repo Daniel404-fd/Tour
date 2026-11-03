@@ -22,6 +22,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+      - name: Кэш Robolectric (иначе тесты каждый раз качают Android из Maven и иногда падают по сети)
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/robolectric
+          key: robolectric-${{ hashFiles('android/app/build.gradle.kts') }}
       - name: Тесты и сборка APK
         run: gradle --no-daemon testDebugUnitTest assembleRelease
       - name: Отчёт тестов
