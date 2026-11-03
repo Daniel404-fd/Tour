@@ -12,12 +12,26 @@ from tracker.db import Database
 from tracker.logic import Task
 
 
+_pages = []
+
+
+def keep(page):
+    """Страницы удаляем как в программе — deleteLater, а не сборщиком мусора Python
+    (иначе при выходе из интерпретатора PySide может упасть, хотя тесты прошли)."""
+    _pages.append(page)
+    return page
+
+
 @pytest.fixture
 def app():
+    from PySide6.QtCore import QCoreApplication, QEvent
     a = QApplication.instance() or QApplication([])
     from tracker.ui import theme
     theme.install(a)
     yield a
+    while _pages:
+        _pages.pop().deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     theme.set_appearance({})
 
 
@@ -69,7 +83,7 @@ def test_task_page_detail_and_progress(tmp_path, app):
     db.add_subtask(tid, "Обои")
     s2 = db.add_subtask(tid, "Клей")
     db.set_subtask_done(s2, True)
-    page = tasks_tab.TasksPage(db)
+    page = keep(tasks_tab.TasksPage(db))
     page.resize(1200, 700)
     page.refresh()
     assert page.table.item(0, 1).text() == "1/2"
@@ -89,7 +103,7 @@ def test_many_topics_become_dropdown(tmp_path, app):
     ids = [db.add_topic(f"Тема {i}", "#008000") for i in range(9)]
     db.add_task(Task(0, "x", topic_id=ids[3]))
     db.add_task(Task(0, "y", topic_id=ids[5]))
-    page = tasks_tab.TasksPage(db)
+    page = keep(tasks_tab.TasksPage(db))
     page.refresh()
     combos = [c for c in page.findChildren(QComboBox) if c.accessibleName() == "Фильтр по теме"]
     assert combos, "при 9 темах фильтр должен быть списком"
@@ -105,7 +119,7 @@ def test_few_topics_stay_chips(tmp_path, app):
     db = Database(tmp_path / "t.sqlite3")
     for i in range(3):
         db.add_topic(f"Тема {i}", "#008000")
-    page = tasks_tab.TasksPage(db)
+    page = keep(tasks_tab.TasksPage(db))
     page.refresh()
     assert not [c for c in page.findChildren(QComboBox) if c.accessibleName() == "Фильтр по теме"]
     assert len(page.topic_group.buttons()) == 5   # все + 3 темы + без темы
@@ -116,7 +130,7 @@ def test_few_topics_stay_chips(tmp_path, app):
 def test_calendar_zoom_keeps_time_and_persists(tmp_path, app):
     from tracker.ui import calendar_tab
     db = Database(tmp_path / "t.sqlite3")
-    page = calendar_tab.CalendarPage(db, lambda *a, **k: None)
+    page = keep(calendar_tab.CalendarPage(db, lambda *a, **k: None))
     page.resize(1200, 800)
     page.show()
     page.refresh()
@@ -130,7 +144,7 @@ def test_calendar_zoom_keeps_time_and_persists(tmp_path, app):
     for _ in range(20):
         page.zoom(-1)
     assert page.grid.hour_h == calendar_tab.ZOOM_STEPS[0] and not page.zoom_out.isEnabled()
-    page2 = calendar_tab.CalendarPage(db, lambda *a, **k: None)
+    page2 = keep(calendar_tab.CalendarPage(db, lambda *a, **k: None))
     assert page2.grid.hour_h == calendar_tab.ZOOM_STEPS[0]
     page.close()
 

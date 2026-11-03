@@ -533,13 +533,14 @@ class TasksPage(w.Page):
         dl.addWidget(self.d_title)
         dl.addWidget(self.d_meta)
         dl.addWidget(self.d_desc)
-        dl.addWidget(w.label("Подзадачи", "section"))
+        self.d_subs_title = w.label("Подзадачи", "section")
+        dl.addWidget(self.d_subs_title)
         self.d_subs = SubtaskList(compact=True)
         self.d_subs.changed.connect(self._detail_subtasks_changed)
         dl.addWidget(self.d_subs)
-        open_btn = w.button("Изменить задачу…", "ghost", "edit")
-        open_btn.clicked.connect(self.edit_selected)
-        dl.addWidget(open_btn, 0, Qt.AlignLeft)
+        self.d_open = w.button("Изменить задачу…", "ghost", "edit")
+        self.d_open.clicked.connect(self.edit_selected)
+        dl.addWidget(self.d_open, 0, Qt.AlignLeft)
         dl.addStretch(1)
         self._detail_task_id: int | None = None
 
@@ -672,9 +673,17 @@ class TasksPage(w.Page):
 
     def _show_detail(self) -> None:
         task = self._selected()
-        self.detail.setVisible(task is not None)
+        # карточка не прячется (чтобы таблица не «прыгала»), а показывает подсказку
+        for wdg in (self.d_meta, self.d_subs_title, self.d_subs, self.d_open):
+            wdg.setEnabled(task is not None)
+        self.d_subs.setVisible(task is not None)
+        self.d_subs_title.setVisible(task is not None)
+        self.d_open.setVisible(task is not None)
         if task is None:
             self._detail_task_id = None
+            self.d_title.setText("Выберите задачу")
+            self.d_meta.setText("Здесь появятся её описание и подзадачи — их можно отмечать прямо отсюда.")
+            self.d_desc.hide()
             return
         today = date.today()
         topic = next((t for t in self.db.list_topics() if t.id == task.topic_id), None)
