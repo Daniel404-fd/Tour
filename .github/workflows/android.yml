@@ -1,0 +1,43 @@
+name: Android
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Тесты и сборка APK
+        run: gradle --no-daemon testDebugUnitTest assembleRelease
+      - name: Отчёт тестов
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: android/app/build/reports/tests
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Совместимость с программой для ПК (Android → ПК)
+        working-directory: .
+        run: |
+          pip install "cryptography>=41"
+          python tools/interop.py check android/app/build/interop/android-payload.json.gz
+      - name: Переименовать APK
+        run: cp app/build/outputs/apk/release/app-release.apk HabitTracker.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HabitTracker-android
+          path: android/HabitTracker.apk

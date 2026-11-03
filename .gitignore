@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+desktop/build/
+desktop/dist/
+desktop/.venv/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+.idea/
+*.iml

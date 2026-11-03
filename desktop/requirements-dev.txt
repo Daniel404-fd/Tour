@@ -1,0 +1,4 @@
+pytest>=7
+pyinstaller>=6.0
+wsgidav>=4.3
+cheroot>=10

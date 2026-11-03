@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.HabitTracker" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">#0F6E6A</item>
+        <item name="android:navigationBarColor">#F3F2EE</item>
+        <item name="android:windowBackground">#F3F2EE</item>
+    </style>
+</resources>
