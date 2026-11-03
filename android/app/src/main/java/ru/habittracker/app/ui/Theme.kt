@@ -37,6 +37,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.graphics.ColorUtils
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -61,7 +66,7 @@ fun hex(s: String) = Color(android.graphics.Color.parseColor(s))
 
 val LightTokens = Tokens(
     bg = hex("#F3F2EE"), surface = hex("#FFFFFF"), surface2 = hex("#F7F6F3"), text = hex("#1A1C1E"),
-    text2 = hex("#4D5156"), text3 = hex("#666A70"), border = hex("#E1DFD8"), borderStrong = hex("#CFCCC3"),
+    text2 = hex("#3F4348"), text3 = hex("#565A60"), border = hex("#E1DFD8"), borderStrong = hex("#BDB9AF"),
     accent = hex("#4338CA"), accentText = hex("#FFFFFF"), accentSoft = hex("#E8E7FB"),
     teal = hex("#0F6E6A"), tealText = hex("#FFFFFF"), tealSoft = hex("#E1F0EE"), tealOnSoft = hex("#0B4F4C"),
     link = hex("#0F6E6A"), danger = hex("#B42318"), dangerSoft = hex("#FDECEA"), warn = hex("#8A5A00"),
@@ -69,18 +74,92 @@ val LightTokens = Tokens(
 )
 val DarkTokens = Tokens(
     bg = hex("#151719"), surface = hex("#1E2124"), surface2 = hex("#24282C"), text = hex("#ECEDEE"),
-    text2 = hex("#B3B8BD"), text3 = hex("#9AA0A6"), border = hex("#30343A"), borderStrong = hex("#41464D"),
+    text2 = hex("#CDD1D5"), text3 = hex("#AFB5BB"), border = hex("#34383E"), borderStrong = hex("#5A6068"),
     accent = hex("#8B85F7"), accentText = hex("#14123A"), accentSoft = hex("#2B2950"),
-    teal = hex("#0E4F4C"), tealText = hex("#FFFFFF"), tealSoft = hex("#173634"), tealOnSoft = hex("#8EDBD4"),
+    teal = hex("#0F6E6A"), tealText = hex("#FFFFFF"), tealSoft = hex("#1D4340"), tealOnSoft = hex("#A6EBE4"),
     link = hex("#5FD1C9"), danger = hex("#FF8A80"), dangerSoft = hex("#3D2220"), warn = hex("#F2C46D"),
     warnSoft = hex("#3A2F17"), empty = hex("#2E3237"), todayBg = hex("#17302E"), now = hex("#FF6B5E"),
 )
 
+// ---------------------------------------------------------------- своё оформление
+
+val PRIMARY_PRESETS = listOf("#0F6E6A" to "Бирюзовый", "#1D4ED8" to "Синий", "#4338CA" to "Индиго",
+    "#7E22CE" to "Фиолетовый", "#BE185D" to "Малиновый", "#B91C1C" to "Красный", "#B45309" to "Янтарный",
+    "#15803D" to "Зелёный", "#374151" to "Графит")
+val ACCENT_PRESETS = listOf("#4338CA" to "Индиго", "#1D4ED8" to "Синий", "#0F766E" to "Бирюзовый",
+    "#15803D" to "Зелёный", "#B45309" to "Янтарный", "#BE185D" to "Малиновый", "#7E22CE" to "Фиолетовый")
+
+/** Настройки оформления телефона (хранятся локально, не синхронизируются). */
+object Appearance {
+    private var prefs: android.content.SharedPreferences? = null
+    var primary by mutableStateOf<String?>(null); private set
+    var accent by mutableStateOf<String?>(null); private set
+    var mode by mutableStateOf("system"); private set     // system | light | dark
+
+    fun load(ctx: android.content.Context) {
+        val p = ctx.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE)
+        prefs = p
+        primary = p.getString("primary", null); accent = p.getString("accent", null); mode = p.getString("mode", "system") ?: "system"
+    }
+    fun update(primary: String? = this.primary, accent: String? = this.accent, mode: String = this.mode) {
+        this.primary = primary; this.accent = accent; this.mode = mode
+        prefs?.edit()?.putString("primary", primary)?.putString("accent", accent)?.putString("mode", mode)?.apply()
+    }
+    fun reset() = update(null, null, "system")
+}
+
+object Contrast {
+    fun ratio(a: Color, b: Color) = ColorUtils.calculateContrast(a.copy(alpha = 1f).toArgb(), b.copy(alpha = 1f).toArgb())
+    fun mix(a: Color, b: Color, t: Float) = Color(ColorUtils.blendARGB(a.toArgb(), b.toArgb(), t))
+    /** Темнее/светлее (тот же оттенок), пока контраст с фоном не станет ≥ target. */
+    fun shift(c: Color, against: Color, target: Double, lighter: Boolean): Color {
+        val hsl = FloatArray(3)
+        ColorUtils.colorToHSL(c.toArgb(), hsl)
+        var out = c
+        repeat(60) {
+            if (ratio(out, against) >= target) return out
+            hsl[2] = if (lighter) minOf(1f, hsl[2] + 0.02f) else maxOf(0f, hsl[2] - 0.02f)
+            out = Color(ColorUtils.HSLToColor(hsl))
+        }
+        return out
+    }
+}
+
+/** Как derive() в программе для ПК: свой цвет, но текст не хуже 4.5:1. */
+fun derive(base: Tokens, dark: Boolean, primary: String?, accent: String?): Tokens {
+    var t = base
+    val white = Color.White
+    if (primary != null) {
+        val p = hex(primary)
+        var fill = Contrast.shift(p, white, 4.8, lighter = false)
+        if (dark) fill = Contrast.mix(fill, Color.Black, 0.2f)
+        val soft = Contrast.mix(t.surface, fill, if (dark) 0.35f else 0.16f)
+        t = t.copy(teal = fill, tealText = white, tealSoft = soft,
+            tealOnSoft = Contrast.shift(p, soft, 5.0, lighter = dark),
+            link = Contrast.shift(p, t.surface, 4.8, lighter = dark),
+            todayBg = Contrast.mix(t.bg, fill, if (dark) 0.22f else 0.10f))
+    }
+    if (accent != null) {
+        val a0 = hex(accent)
+        t = if (dark) {
+            val a = Contrast.shift(a0, t.surface, 5.0, lighter = true)
+            val txt = if (Contrast.ratio(a, hex("#121212")) >= 4.5) hex("#121212") else white
+            t.copy(accent = a, accentText = txt, accentSoft = Contrast.mix(t.surface, a, 0.3f))
+        } else {
+            val a = Contrast.shift(a0, white, 5.0, lighter = false)
+            t.copy(accent = a, accentText = white, accentSoft = Contrast.mix(t.surface, a, 0.16f))
+        }
+    }
+    return t
+}
+
 val LocalTok = staticCompositionLocalOf { LightTokens }
 val tok: Tokens @Composable get() = LocalTok.current
 
+// В тёмной теме «primary» (текстовые кнопки, ссылки, переключатели) — светлый вариант основного цвета:
+// тёмно-бирюзовый текст на тёмном фоне почти не читался.
 private fun scheme(t: Tokens, dark: Boolean): ColorScheme = if (dark) darkColorScheme(
-    primary = t.teal, onPrimary = t.tealText, primaryContainer = t.tealSoft, onPrimaryContainer = t.tealOnSoft,
+    primary = t.link, onPrimary = hex("#0B1514"), primaryContainer = t.tealSoft, onPrimaryContainer = t.tealOnSoft,
     secondary = t.accent, onSecondary = t.accentText, secondaryContainer = t.accentSoft,
     background = t.bg, onBackground = t.text, surface = t.surface, onSurface = t.text,
     surfaceVariant = t.surface2, onSurfaceVariant = t.text2, outline = t.borderStrong, outlineVariant = t.border,
@@ -95,8 +174,9 @@ private fun scheme(t: Tokens, dark: Boolean): ColorScheme = if (dark) darkColorS
 
 @Composable
 fun TrackerTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()       // как на ПК: следуем системной теме
-    val t = if (dark) DarkTokens else LightTokens
+    val system = isSystemInDarkTheme()
+    val dark = when (Appearance.mode) { "dark" -> true; "light" -> false; else -> system }
+    val t = derive(if (dark) DarkTokens else LightTokens, dark, Appearance.primary, Appearance.accent)
     CompositionLocalProvider(LocalTok provides t) {
         MaterialTheme(colorScheme = scheme(t, dark), typography = Typography(), content = content)
     }
@@ -124,7 +204,7 @@ fun Card(title: String? = null, action: (@Composable RowScope.() -> Unit)? = nul
 
 @Composable
 fun Caption(text: String, color: Color = tok.text2, modifier: Modifier = Modifier, maxLines: Int = Int.MAX_VALUE) =
-    Text(text, color = color, fontSize = 13.sp, modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
+    Text(text, color = color, fontSize = 14.sp, modifier = modifier, maxLines = maxLines, overflow = TextOverflow.Ellipsis)
 
 @Composable
 fun Secondary(text: String, color: Color = tok.text2, modifier: Modifier = Modifier) =

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from PySide6.QtCore import QDate, QSize, Qt
+from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -32,11 +32,157 @@ def _dialog_buttons(dlg: QDialog, ok_text: str) -> QDialogButtonBox:
     return buttons
 
 
+# ---------------------------------------------------------------- подзадачи
+
+class SubtaskList(QWidget):
+    """Список подзадач: галочка — выполнено, двойной щелчок — переименовать, Delete — удалить."""
+
+    changed = Signal()
+
+    def __init__(self, entries: list[dict] | None = None, compact: bool = False):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.progress = w.label("", "caption")
+        lay.addWidget(self.progress)
+        self.list = QListWidget()
+        self.list.setObjectName("subtasks")
+        self.list.setAccessibleName("Подзадачи")
+        self.list.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+        self.list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._menu)
+        self.compact = compact
+        self.list.setMinimumHeight(60 if compact else 90)
+        lay.addWidget(self.list, 0 if compact else 1)
+        add_row = QHBoxLayout()
+        add_row.setSpacing(6)
+        self.add_edit = QLineEdit()
+        self.add_edit.setPlaceholderText("Новая подзадача")
+        self.add_edit.setToolTip("Введите и нажмите Enter")
+        self.add_edit.setAccessibleName("Новая подзадача")
+        self.add_edit.returnPressed.connect(self._add)
+        add_btn = w.button("", "ghost", "plus", "Добавить подзадачу")
+        add_btn.setFixedSize(32, 30)
+        add_btn.clicked.connect(self._add)
+        add_row.addWidget(self.add_edit, 1)
+        add_row.addWidget(add_btn)
+        lay.addLayout(add_row)
+        QShortcut(QKeySequence(Qt.Key_Delete), self.list, activated=self._delete_current)
+        self._loading = False
+        self.set_entries(entries or [])
+        self.list.itemChanged.connect(self._item_changed)
+        self.list.model().rowsMoved.connect(lambda *_: self._emit())
+
+    def set_entries(self, entries: list[dict]) -> None:
+        self._loading = True
+        self.list.clear()
+        for e in entries:
+            self._append(e)
+        self._loading = False
+        self._update_progress()
+
+    def _append(self, e: dict) -> None:
+        item = QListWidgetItem(e["title"])
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEditable | Qt.ItemIsDragEnabled)
+        item.setFlags(item.flags() & ~Qt.ItemIsDropEnabled)
+        item.setCheckState(Qt.Checked if e.get("done") else Qt.Unchecked)
+        item.setData(Qt.UserRole, e.get("id", 0))
+        self._style(item)
+        self.list.addItem(item)
+
+    def _style(self, item: QListWidgetItem) -> None:
+        f = item.font()
+        f.setStrikeOut(item.checkState() == Qt.Checked)
+        item.setFont(f)
+        item.setForeground(QBrush(theme.color("text3" if item.checkState() == Qt.Checked else "text")))
+
+    def entries(self) -> list[dict]:
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            title = it.text().strip()
+            if title:
+                out.append({"id": it.data(Qt.UserRole) or 0, "title": title, "done": it.checkState() == Qt.Checked})
+        return out
+
+    def _update_progress(self) -> None:
+        e = self.entries()
+        done = sum(1 for x in e if x["done"])
+        self.progress.setText(f"Выполнено {done} из {len(e)}" if e else "Разбейте задачу на шаги — так проще начать.")
+        if self.compact:   # в карточке список растёт по содержимому, а не занимает всю высоту
+            rows = max(2, min(12, self.list.count()))
+            self.list.setFixedHeight(rows * 30 + 8)
+
+    def _emit(self) -> None:
+        if not self._loading:
+            self._update_progress()
+            self.changed.emit()
+
+    def _item_changed(self, item: QListWidgetItem) -> None:
+        if self._loading:
+            return
+        self._loading = True
+        self._style(item)
+        self._loading = False
+        self._emit()
+
+    def _add(self) -> None:
+        title = self.add_edit.text().strip()
+        if not title:
+            return
+        self._loading = True
+        self._append({"id": 0, "title": title, "done": False})
+        self._loading = False
+        self.add_edit.clear()
+        self._emit()
+
+    def _delete_current(self) -> None:
+        row = self.list.currentRow()
+        if row >= 0:
+            self.list.takeItem(row)
+            self._emit()
+
+    def _menu(self, pos) -> None:
+        item = self.list.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        menu.addAction("Переименовать", lambda: self.list.editItem(item))
+        menu.addAction("Удалить", lambda: (self.list.setCurrentItem(item), self._delete_current()))
+        menu.exec(self.list.viewport().mapToGlobal(pos))
+
+
+def apply_subtasks(db: Database, task_id: int, entries: list[dict]) -> None:
+    """Привести подзадачи задачи к списку entries (id=0 — новая), включая порядок."""
+    existing = {s.id: s for s in db.subtasks(task_id)}
+    keep = {e["id"] for e in entries if e["id"]}
+    for sid in existing:
+        if sid not in keep:
+            db.delete_subtask(sid)
+    for pos, e in enumerate(entries):
+        sid = e["id"]
+        if sid and sid in existing:
+            cur = existing[sid]
+            if cur.title != e["title"]:
+                db.rename_subtask(sid, e["title"])
+            if cur.done != e["done"]:
+                db.set_subtask_done(sid, e["done"])
+            if cur.position != pos:
+                db.set_subtask_position(sid, pos)
+        else:
+            sid = db.add_subtask(task_id, e["title"])
+            if e["done"]:
+                db.set_subtask_done(sid, True)
+            db.set_subtask_position(sid, pos)
+
+
 # ---------------------------------------------------------------- диалог задачи
 
 class TaskDialog(QDialog):
     def __init__(self, parent: QWidget, topics: list[logic.Topic], task: logic.Task | None = None,
-                 default_topic: int | None = None):
+                 default_topic: int | None = None, subtasks: list | None = None):
         super().__init__(parent)
         self.setWindowTitle("Задача" if task else "Новая задача")
         self.setMinimumWidth(460)
@@ -88,6 +234,8 @@ class TaskDialog(QDialog):
         form.addRow("Тема", self.topic)
         form.addRow("Срок", deadline_row)
         form.addRow("Приоритет", self.priority)
+        self.subtasks = SubtaskList([{"id": x.id, "title": x.title, "done": x.done} for x in (subtasks or [])])
+        form.addRow("Подзадачи", self.subtasks)
         form.addRow("", self.done_box)
         form.addRow(_dialog_buttons(self, "Сохранить"))
         self.title_edit.textChanged.connect(lambda: self.error.hide())
@@ -99,6 +247,12 @@ class TaskDialog(QDialog):
             self.title_edit.setFocus()
             return
         super().accept()
+
+    def result_subtasks(self) -> list[dict]:
+        pending = self.subtasks.add_edit.text().strip()   # набрали, но не нажали Enter — тоже сохраняем
+        if pending:
+            self.subtasks._add()
+        return self.subtasks.entries()
 
     def result_task(self) -> logic.Task:
         qd = self.deadline_edit.date()
@@ -277,13 +431,16 @@ class TopicsDialog(QDialog):
 # ---------------------------------------------------------------- страница
 
 class TasksPage(w.Page):
-    COLUMNS = ["Задача", "Тема", "Срок", "Приоритет"]
+    COLUMNS = ["Задача", "Шаги", "Тема", "Срок", "Приоритет"]
 
     def __init__(self, db: Database, navigate=None):
         super().__init__("Задачи", scroll=False)
         self.db = db
         self.status = logic.FILTER_ACTIVE
-        self.topic_filter = logic.TOPIC_ALL
+        try:
+            self.topic_filter = int(db.get_pref("tasks_topic", str(logic.TOPIC_ALL)))
+        except ValueError:
+            self.topic_filter = logic.TOPIC_ALL
 
         topics_btn = w.button("Темы…", None, "tag", "Добавить, переименовать или удалить темы")
         topics_btn.clicked.connect(self.manage_topics)
@@ -351,16 +508,50 @@ class TasksPage(w.Page):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, len(self.COLUMNS)):
             header.setSectionResizeMode(col, QHeaderView.Interactive)
-        self.table.setColumnWidth(1, 150)
-        self.table.setColumnWidth(2, 240)
-        self.table.setColumnWidth(3, 110)
+        self.table.setColumnWidth(1, 56)
+        self.table.setColumnWidth(2, 130)
+        self.table.setColumnWidth(3, 200)
+        self.table.setColumnWidth(4, 96)
         self.table.cellDoubleClicked.connect(lambda *_: self.edit_selected())
         self.table.itemSelectionChanged.connect(self._update_actions)
-        self.content.addWidget(self.table, 1)
+        self.table.itemSelectionChanged.connect(self._show_detail)
 
         self.empty = w.label("", "empty", wrap=True)
         self.empty.setAlignment(Qt.AlignCenter)
-        self.content.addWidget(self.empty)
+
+        # карточка выбранной задачи: описание и подзадачи можно отмечать, не открывая диалог
+        self.detail = QFrame()
+        self.detail.setObjectName("card")
+        self.detail.setFixedWidth(300)
+        dl = QVBoxLayout(self.detail)
+        dl.setContentsMargins(16, 14, 16, 14)
+        dl.setSpacing(8)
+        self.d_title = w.label("", "section", wrap=True)
+        self.d_meta = w.label("", "caption", wrap=True)
+        self.d_desc = w.label("", "secondary", wrap=True)
+        self.d_desc.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        dl.addWidget(self.d_title)
+        dl.addWidget(self.d_meta)
+        dl.addWidget(self.d_desc)
+        dl.addWidget(w.label("Подзадачи", "section"))
+        self.d_subs = SubtaskList(compact=True)
+        self.d_subs.changed.connect(self._detail_subtasks_changed)
+        dl.addWidget(self.d_subs)
+        open_btn = w.button("Изменить задачу…", "ghost", "edit")
+        open_btn.clicked.connect(self.edit_selected)
+        dl.addWidget(open_btn, 0, Qt.AlignLeft)
+        dl.addStretch(1)
+        self._detail_task_id: int | None = None
+
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        left = QVBoxLayout()
+        left.setSpacing(0)
+        left.addWidget(self.table, 1)
+        left.addWidget(self.empty)
+        body.addLayout(left, 1)
+        body.addWidget(self.detail)
+        self.content.addLayout(body, 1)
 
         QShortcut(QKeySequence(Qt.Key_Space), self.table, activated=self.toggle_selected)
         QShortcut(QKeySequence(Qt.Key_Return), self.table, activated=self.edit_selected)
@@ -373,13 +564,22 @@ class TasksPage(w.Page):
         self.refresh()
 
     def _topic_changed(self, btn) -> None:
-        self.topic_filter = btn.property("value")
+        self._set_topic(btn.property("value"))
+
+    def _set_topic(self, value) -> None:
+        if value is None or value == self.topic_filter:
+            return
+        self.topic_filter = value
+        self.db.set_pref("tasks_topic", str(value))
         self.refresh()
 
-    def _rebuild_topic_chips(self, topics: list[logic.Topic]) -> None:
+    CHIP_LIMIT = 6   # больше тем — фильтр становится выпадающим списком
+
+    def _rebuild_topic_chips(self, topics: list[logic.Topic], counts: dict | None = None) -> None:
         for b in self.topic_group.buttons():
             self.topic_group.removeButton(b)
         w.clear_layout(self.topic_row)
+        counts = counts or {}
         ids = {t.id for t in topics}
         if self.topic_filter not in ids and self.topic_filter not in (logic.TOPIC_ALL, logic.TOPIC_NONE):
             self.topic_filter = logic.TOPIC_ALL
@@ -394,8 +594,29 @@ class TasksPage(w.Page):
             self.topic_row.addWidget(add)
             self.topic_row.addStretch()
             return
+        if len(topics) > self.CHIP_LIMIT:
+            self.topic_row.addWidget(w.label("Тема:", "secondary"))
+            combo = QComboBox()
+            combo.setAccessibleName("Фильтр по теме")
+            combo.setMinimumWidth(240)
+            combo.setMaxVisibleItems(16)
+            for name, value, color in entries:
+                text = f"{name}  ·  {counts.get(value, 0)}"
+                if color:
+                    combo.addItem(w.dot_icon(color), text, value)
+                else:
+                    combo.addItem(text, value)
+            combo.setCurrentIndex(max(0, combo.findData(self.topic_filter)))
+            combo.currentIndexChanged.connect(lambda _i: self._set_topic(combo.currentData()))
+            self.topic_row.addWidget(combo)
+            if self.topic_filter != logic.TOPIC_ALL:
+                clear = w.button("Сбросить", "ghost")
+                clear.clicked.connect(lambda: self._set_topic(logic.TOPIC_ALL))
+                self.topic_row.addWidget(clear)
+            self.topic_row.addStretch()
+            return
         for name, value, color in entries:
-            c = w.chip(name, value == self.topic_filter)
+            c = w.chip(f"{name} {counts[value]}" if counts.get(value) else name, value == self.topic_filter)
             c.setProperty("value", value)
             if color:
                 c.setIcon(w.dot_icon(color))
@@ -414,7 +635,9 @@ class TasksPage(w.Page):
         default = self.topic_filter if self.topic_filter > 0 else None
         dlg = TaskDialog(self, self.db.list_topics(), default_topic=default)
         if dlg.exec() == QDialog.Accepted:
-            self.db.add_task(dlg.result_task())
+            subs = dlg.result_subtasks()
+            tid = self.db.add_task(dlg.result_task())
+            apply_subtasks(self.db, tid, subs)
             self.refresh()
 
     def focus_item(self, task_id: int | None = None) -> None:
@@ -425,9 +648,11 @@ class TasksPage(w.Page):
         task = self.db.get_task(task_id)
         if task is None:
             return
-        dlg = TaskDialog(self, self.db.list_topics(), task)
+        dlg = TaskDialog(self, self.db.list_topics(), task, subtasks=self.db.subtasks(task_id))
         if dlg.exec() == QDialog.Accepted:
+            subs = dlg.result_subtasks()
             self.db.update_task(dlg.result_task())
+            apply_subtasks(self.db, task_id, subs)
         self.refresh()
 
     def _selected(self) -> logic.Task | None:
@@ -444,6 +669,52 @@ class TasksPage(w.Page):
         if task is not None:
             self.done_btn.setText("Вернуть в работу" if task.done else "Выполнено")
             self.archive_action.setText("Вернуть из архива" if task.archived else "Отправить в архив")
+
+    def _show_detail(self) -> None:
+        task = self._selected()
+        self.detail.setVisible(task is not None)
+        if task is None:
+            self._detail_task_id = None
+            return
+        today = date.today()
+        topic = next((t for t in self.db.list_topics() if t.id == task.topic_id), None)
+        self.d_title.setText(task.title)
+        meta = []
+        if topic:
+            meta.append(topic.name)
+        if task.deadline:
+            meta.append(f"срок {w.human_date(task.deadline, today)}" +
+                        ("" if task.done else f" · {logic.due_text(task.deadline, today)}"))
+        meta.append(f"приоритет: {logic.PRIORITY_NAMES[task.priority].lower()}")
+        if task.done:
+            meta.append("выполнена")
+        self.d_meta.setText(" · ".join(meta))
+        self.d_desc.setText(task.description)
+        self.d_desc.setVisible(bool(task.description))
+        if self._detail_task_id != task.id or not self.d_subs.list.hasFocus():
+            self.d_subs.set_entries([{"id": x.id, "title": x.title, "done": x.done}
+                                     for x in self.db.subtasks(task.id)])
+        self._detail_task_id = task.id
+
+    def _detail_subtasks_changed(self) -> None:
+        # откладываем: список нельзя пересоздавать прямо из его же сигнала
+        QTimer.singleShot(0, self._apply_detail_subtasks)
+
+    def _apply_detail_subtasks(self) -> None:
+        if self._detail_task_id is None or self.db.get_task(self._detail_task_id) is None:
+            return
+        apply_subtasks(self.db, self._detail_task_id, self.d_subs.entries())
+        # id новых подзадач нужны списку, чтобы следующие правки не создавали дубли
+        self.d_subs.set_entries([{"id": x.id, "title": x.title, "done": x.done}
+                                 for x in self.db.subtasks(self._detail_task_id)])
+        self._refresh_table_only()
+
+    def _refresh_table_only(self) -> None:
+        self._in_detail = True
+        try:
+            self.refresh()
+        finally:
+            self._in_detail = False
 
     def _context_menu(self, pos) -> None:
         if self._selected() is None:
@@ -499,9 +770,15 @@ class TasksPage(w.Page):
         selected = self._selected()
         topics = self.db.list_topics()
         topic_by_id = {t.id: t for t in topics}
-        self._rebuild_topic_chips(topics)
-
         all_tasks = self.db.list_tasks()
+        by_status = logic.filter_tasks(all_tasks, self.status)
+        counts = {logic.TOPIC_ALL: len(by_status), logic.TOPIC_NONE: sum(1 for t in by_status if t.topic_id is None)}
+        for t in by_status:
+            if t.topic_id is not None:
+                counts[t.topic_id] = counts.get(t.topic_id, 0) + 1
+        self._rebuild_topic_chips(topics, counts)
+        subs = self.db.all_subtasks()
+
         active = [t for t in all_tasks if not t.done and not t.archived]
         overdue = sum(1 for t in all_tasks if logic.is_overdue(t, today))
         sub = f"{len(active)} {logic.plural(len(active), 'активная', 'активные', 'активных')}"
@@ -528,29 +805,39 @@ class TasksPage(w.Page):
             else:
                 due = "—"
             title = task.title + ("  (выполнена)" if task.done else "")
-            values = [title, topic.name if topic else "—", due, logic.PRIORITY_NAMES[task.priority]]
+            st = subs.get(task.id)
+            steps = f"{sum(1 for x in st if x.done)}/{len(st)}" if st else ""
+            values = [title, steps, topic.name if topic else "—", due, logic.PRIORITY_NAMES[task.priority]]
             overdue_t, today_t = logic.is_overdue(task, today), logic.is_due_today(task, today)
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if col == 0:
                     item.setData(Qt.UserRole, task.id)
-                    if task.description:
-                        item.setToolTip(task.description)
+                    tip = task.description
+                    if st:
+                        tip = (tip + "\n\n" if tip else "") + "\n".join(
+                            ("✓ " if x.done else "○ ") + x.title for x in st)
+                    if tip:
+                        item.setToolTip(tip)
                     if task.done:
                         f = item.font(); f.setStrikeOut(True); item.setFont(f)
-                if col == 1 and topic:
+                if col == 2 and topic:
                     item.setIcon(w.dot_icon(topic.color))
+                if col == 1 and st:
+                    item.setToolTip("Выполнено подзадач")
+                    if all(x.done for x in st):
+                        item.setForeground(QBrush(theme.color("accent")))
                 if task.done or task.archived:
                     item.setForeground(QBrush(muted))
                 if overdue_t:
                     item.setBackground(QBrush(danger_bg))
-                    if col == 2:
+                    if col == 3:
                         item.setForeground(QBrush(danger))
                 elif today_t:
                     item.setBackground(QBrush(warn_bg))
-                    if col == 2:
+                    if col == 3:
                         item.setForeground(QBrush(warn))
-                if col == 3 and task.priority == logic.PRIORITY_HIGH and not task.done:
+                if col == 4 and task.priority == logic.PRIORITY_HIGH and not task.done:
                     f = item.font(); f.setBold(True); item.setFont(f)
                 self.table.setItem(row, col, item)
             if selected and task.id == selected.id:
@@ -559,6 +846,8 @@ class TasksPage(w.Page):
             self.table.selectRow(reselect)
         self.table.setVisible(bool(tasks))
         self.empty.setVisible(not tasks)
+        if not getattr(self, "_in_detail", False):
+            self._show_detail()
         if not tasks:
             if self.status == logic.FILTER_ACTIVE and not all_tasks:
                 self.empty.setText("Задач пока нет. Нажмите «Новая задача» или Ctrl+N.")

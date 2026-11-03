@@ -39,6 +39,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        ru.habittracker.app.ui.Appearance.load(this)
         repo = Repo(Db(this))
         sync = SyncManager(this)
         repo.onChange = {

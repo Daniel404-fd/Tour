@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 
 from PySide6.QtCore import QDate, QPointF, QRectF, QSize, Qt, QTime, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
@@ -18,7 +18,8 @@ from ..db import Database
 from . import widgets as w
 from .theme import theme
 
-HOUR_H = 48            # высота часа в сетке, px
+HOUR_H = 48            # высота часа в сетке по умолчанию, px
+ZOOM_STEPS = [24, 32, 40, 48, 60, 76, 96, 120, 150]   # масштабы сетки (высота часа)
 GUTTER = 62            # колонка с часами
 SNAP_MIN = 15
 MONTHS = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь",
@@ -70,7 +71,8 @@ class TimeGrid(QWidget):
         super().__init__()
         self.days: list[date] = []
         self.items: list[Item] = []
-        self.setMinimumHeight(24 * HOUR_H + 1)
+        self.hour_h = HOUR_H
+        self.setMinimumHeight(24 * self.hour_h + 1)
         self.setMouseTracking(True)
         self.drag: dict | None = None
         self.hits: list[tuple[QRectF, Item]] = []
@@ -87,13 +89,13 @@ class TimeGrid(QWidget):
     def pos_to(self, pos: QPointF) -> tuple[int, datetime]:
         di = int((pos.x() - GUTTER) // self.col_w())
         di = max(0, min(len(self.days) - 1, di))
-        minutes = max(0, min(24 * 60 - SNAP_MIN, pos.y() / HOUR_H * 60))
+        minutes = max(0, min(24 * 60 - SNAP_MIN, pos.y() / self.hour_h * 60))
         minutes = int(minutes // SNAP_MIN) * SNAP_MIN      # 15-минутная ячейка под курсором
         return di, datetime.combine(self.days[di], time.min) + timedelta(minutes=minutes)
 
     def _y(self, dt: datetime, day: date) -> float:
         h = (dt - datetime.combine(day, time.min)).total_seconds() / 3600
-        return max(0.0, min(24.0, h)) * HOUR_H
+        return max(0.0, min(24.0, h)) * self.hour_h
 
     def _blocks(self):
         """(rect, item, day) для всех видимых частей событий с учётом пересечений."""
@@ -104,7 +106,7 @@ class TimeGrid(QWidget):
             de = ds + timedelta(days=1)
             todays = [i for i in self.items if i.occ.end > ds and i.occ.start < de
                       or (i.occ.start == i.occ.end and ds <= i.occ.start < de)]
-            spans = [(self._y(i.occ.start, day) / HOUR_H, self._y(i.occ.end, day) / HOUR_H) for i in todays]
+            spans = [(self._y(i.occ.start, day) / self.hour_h, self._y(i.occ.end, day) / self.hour_h) for i in todays]
             for item, (col, n) in zip(todays, cal.layout_columns(spans)):
                 y1 = self._y(item.occ.start, day)
                 y2 = max(y1 + 20, self._y(item.occ.end, day))
@@ -127,11 +129,15 @@ class TimeGrid(QWidget):
         small = _small_font(self.font(), 8.5)
         p.setFont(small)
         for h in range(24):
-            y = h * HOUR_H
+            y = h * self.hour_h
             p.setPen(QPen(theme.color("border"), 1))
             p.drawLine(QPointF(GUTTER - 6, y + 0.5), QPointF(self.width(), y + 0.5))
             p.setPen(QPen(theme.color("border"), 1, Qt.DotLine))
-            p.drawLine(QPointF(GUTTER, y + HOUR_H / 2 + 0.5), QPointF(self.width(), y + HOUR_H / 2 + 0.5))
+            # чем крупнее масштаб, тем мельче деления: 30 мин, а с 96 px — каждые 15 мин
+            parts = 4 if self.hour_h >= 96 else 2 if self.hour_h >= 32 else 1
+            for k in range(1, parts):
+                yy = y + self.hour_h * k / parts + 0.5
+                p.drawLine(QPointF(GUTTER, yy), QPointF(self.width(), yy))
             if h:
                 p.setPen(theme.color("text2"))
                 p.drawText(QRectF(0, y - 8, GUTTER - 10, 16), Qt.AlignRight | Qt.AlignVCenter, f"{h:02d}:00")
@@ -161,7 +167,7 @@ class TimeGrid(QWidget):
             elif d["mode"] == "create":
                 s, e = d["new"]
                 di = self.days.index(s.date()) if s.date() in self.days else 0
-                y1, y2 = self._y(s, s.date()), self._y(e, s.date()) if e.date() == s.date() else 24 * HOUR_H
+                y1, y2 = self._y(s, s.date()), self._y(e, s.date()) if e.date() == s.date() else 24 * self.hour_h
                 r = QRectF(GUTTER + di * cw + 2, y1 + 1, cw - 6, max(20, y2 - y1 - 2))
                 c = theme.color("teal")
                 c.setAlphaF(0.85)
@@ -213,6 +219,23 @@ class TimeGrid(QWidget):
             text = f"{item.title}, {_hm(s)}"
             p.drawText(inner, Qt.AlignLeft | Qt.AlignVCenter,
                        QFontMetrics(small).elidedText(text, Qt.ElideRight, int(inner.width())))
+
+    # ---- масштаб ----
+    def set_hour_height(self, h: int) -> None:
+        self.hour_h = h
+        self.setMinimumHeight(24 * h + 1)
+        self.setMaximumHeight(24 * h + 1)
+        self.update()
+
+    zoomRequested = Signal(int, float)   # шаг (+1/−1), y курсора — чтобы масштабировать «вокруг» него
+
+    def wheelEvent(self, e) -> None:
+        if e.modifiers() & Qt.ControlModifier:
+            step = 1 if e.angleDelta().y() > 0 else -1
+            self.zoomRequested.emit(step, e.position().y())
+            e.accept()
+        else:
+            super().wheelEvent(e)
 
     # ---- мышь ----
     def _hit(self, pos: QPointF) -> tuple[QRectF, Item] | None:
@@ -964,7 +987,25 @@ class CalendarPage(w.Page):
         seg_w = QWidget(); seg_w.setLayout(seg)
         create = w.button("Создать", "primary", "plus", "Новое событие (Ctrl+N)")
         create.clicked.connect(self.new_item)
-        for x in (today_btn, prev_b, next_b, seg_w, create):
+        # масштаб сетки дня/недели: кнопки, Ctrl+колесо, Ctrl+= / Ctrl+- / Ctrl+0
+        self.zoom_out = w.button("", "ghost", "minus", "Мельче (Ctrl+−, Ctrl+колесо)")
+        self.zoom_in = w.button("", "ghost", "plus", "Крупнее (Ctrl+=, Ctrl+колесо)")
+        self.zoom_out.setAccessibleName("Уменьшить масштаб")
+        self.zoom_in.setAccessibleName("Увеличить масштаб")
+        self.zoom_label = QPushButton("100%")
+        self.zoom_label.setProperty("kind", "ghost")
+        self.zoom_label.setToolTip("Обычный масштаб (Ctrl+0)")
+        self.zoom_label.setFixedWidth(58)
+        for b in (self.zoom_out, self.zoom_in):
+            b.setFixedSize(32, 32)
+        self.zoom_out.clicked.connect(lambda: self.zoom(-1))
+        self.zoom_in.clicked.connect(lambda: self.zoom(1))
+        self.zoom_label.clicked.connect(lambda: self.set_zoom(HOUR_H))
+        zoom_row = QHBoxLayout(); zoom_row.setSpacing(0); zoom_row.setContentsMargins(0, 0, 0, 0)
+        for b in (self.zoom_out, self.zoom_label, self.zoom_in):
+            zoom_row.addWidget(b)
+        self.zoom_box = QWidget(); self.zoom_box.setLayout(zoom_row)
+        for x in (self.zoom_box, today_btn, prev_b, next_b, seg_w, create):
             self.header.add_action(x)
 
         body = QHBoxLayout()
@@ -1032,6 +1073,15 @@ class CalendarPage(w.Page):
             v.itemClicked.connect(self.open_item)
             v.createRequested.connect(self.create_at)
         self.grid.changeRequested.connect(self.change_occurrence)
+        self.grid.zoomRequested.connect(self.zoom)
+        for seq, step in (("Ctrl+=", 1), ("Ctrl++", 1), ("Ctrl+-", -1)):
+            QShortcut(QKeySequence(seq), self, activated=lambda step=step: self.zoom(step))
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=lambda: self.set_zoom(HOUR_H))
+        try:
+            saved = int(db.get_pref("cal_zoom", str(HOUR_H)))
+        except ValueError:
+            saved = HOUR_H
+        self.set_zoom(min(ZOOM_STEPS, key=lambda z: abs(z - saved)), save=False)
         self.month_view.changeRequested.connect(self.change_occurrence)
         self.day_header.dayClicked.connect(lambda d: self.go_date(d, "day"))
         self.month_view.dayClicked.connect(lambda d: self.go_date(d, "day"))
@@ -1095,9 +1145,34 @@ class CalendarPage(w.Page):
         else:
             super().keyPressEvent(e)
 
+    # ---- масштаб ----
+    def zoom(self, step: int, anchor_y: float | None = None) -> None:
+        cur = self.grid.hour_h
+        i = min(range(len(ZOOM_STEPS)), key=lambda k: abs(ZOOM_STEPS[k] - cur))
+        i = max(0, min(len(ZOOM_STEPS) - 1, i + step))
+        self.set_zoom(ZOOM_STEPS[i], anchor_y=anchor_y)
+
+    def set_zoom(self, h: int, save: bool = True, anchor_y: float | None = None) -> None:
+        bar = self.grid_scroll.verticalScrollBar()
+        old = self.grid.hour_h
+        view_h = self.grid_scroll.viewport().height()
+        # точка, которая должна остаться на месте: под курсором или центр экрана
+        y = anchor_y if anchor_y is not None else bar.value() + view_h / 2
+        offset = y - bar.value()
+        hours = y / old
+        self.grid.set_hour_height(h)
+        self.grid_scroll.widget().adjustSize()
+        bar.setRange(0, max(0, 24 * h + 1 - view_h))
+        bar.setValue(int(hours * h - offset))
+        self.zoom_label.setText(f"{round(h * 100 / HOUR_H)}%")
+        self.zoom_out.setEnabled(h > ZOOM_STEPS[0])
+        self.zoom_in.setEnabled(h < ZOOM_STEPS[-1])
+        if save:
+            self.db.set_pref("cal_zoom", str(h))
+
     def _scroll_to_now(self) -> None:
         h = max(0, datetime.now().hour - 2) if self.anchor == date.today() else 7
-        QTimer.singleShot(0, lambda: self.grid_scroll.verticalScrollBar().setValue(int(h * HOUR_H)))
+        QTimer.singleShot(0, lambda: self.grid_scroll.verticalScrollBar().setValue(int(h * self.grid.hour_h)))
 
     # ---- данные ----
     def _calendars(self) -> dict[int, CalendarInfo]:
@@ -1142,6 +1217,7 @@ class CalendarPage(w.Page):
         self.mini.set_selection(days if self.view != "month" else [], a)
         month = self.view == "month"
         self.week_box.setVisible(not month)
+        self.zoom_box.setVisible(not month)
         self.month_view.setVisible(month)
         if month:
             self.month_view.set_data(cal.month_grid(a.year, a.month), a.month, items)

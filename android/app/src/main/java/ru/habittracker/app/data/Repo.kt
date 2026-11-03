@@ -117,6 +117,39 @@ class Repo(val helper: Db) {
     fun renameStep(id: Long, title: String) = exec("UPDATE goal_steps SET title = ? WHERE id = ?", title, id)
     fun deleteStep(id: Long) = exec("DELETE FROM goal_steps WHERE id = ?", id)
 
+    // ---------------------------------------------------------------- подзадачи
+    fun allSubtasks(): Map<Long, List<Subtask>> =
+        query("SELECT id, task_id, title, done, position FROM task_subtasks ORDER BY position, id") {
+            Subtask(it.getLong(0), it.getLong(1), it.getString(2), it.bool(3), it.getInt(4))
+        }.groupBy { it.taskId }
+    fun subtasks(taskId: Long): List<Subtask> = allSubtasks()[taskId] ?: emptyList()
+    fun addSubtask(taskId: Long, title: String): Long {
+        val pos = query("SELECT COALESCE(MAX(position), -1) + 1 FROM task_subtasks WHERE task_id = ?", arrayOf(taskId.toString())) { it.getInt(0) }.first()
+        return insert("task_subtasks", cv("task_id" to taskId, "title" to title, "position" to pos))
+    }
+    fun setSubtaskDone(id: Long, done: Boolean) = exec("UPDATE task_subtasks SET done = ? WHERE id = ?", done, id)
+    fun deleteSubtask(id: Long) = exec("DELETE FROM task_subtasks WHERE id = ?", id)
+
+    /** Привести подзадачи к списку из редактора (новые, удалённые, переименованные, порядок) — одной транзакцией. */
+    fun applySubtasks(taskId: Long, drafts: List<SubtaskDraft>) {
+        val existing = subtasks(taskId).associateBy { it.id }
+        val keep = drafts.filter { it.id != 0L }.map { it.id }.toSet()
+        db.beginTransaction()
+        try {
+            for (id in existing.keys) if (id !in keep) db.execSQL("DELETE FROM task_subtasks WHERE id = ?", arrayOf(id))
+            drafts.forEachIndexed { pos, d ->
+                val cur = existing[d.id]
+                if (cur != null) {
+                    if (cur.title != d.title || cur.done != d.done || cur.position != pos)
+                        db.execSQL("UPDATE task_subtasks SET title = ?, done = ?, position = ? WHERE id = ?",
+                            arrayOf<Any>(d.title, if (d.done) 1 else 0, pos, d.id))
+                } else db.insertOrThrow("task_subtasks", null, cv("task_id" to taskId, "title" to d.title, "done" to d.done, "position" to pos))
+            }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
+        changed()
+    }
+
     fun addContribution(goalId: Long, amount: Double, day: LocalDate = LocalDate.now(), note: String = "") =
         insert("goal_contributions", cv("goal_id" to goalId, "day" to day, "amount" to amount, "note" to note))
     fun deleteContribution(id: Long) = exec("DELETE FROM goal_contributions WHERE id = ?", id)

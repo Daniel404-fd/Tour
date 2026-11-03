@@ -59,6 +59,7 @@ fun HomeScreen(nav: Nav) {
     val goals = useData { repo.goals().filter { !it.done && !it.archived }.sortedWith(compareBy({ it.targetDate == null }, { it.targetDate ?: LocalDate.MAX })) }
     val steps = useData { repo.allSteps() }
     val saved = useData { repo.savedAmounts() }
+    val subs = useData { repo.allSubtasks() }
     var period by remember { mutableStateOf(repo.pref("upcoming_days", "4")!!.toIntOrNull() ?: 4) }
     val t = tok
 
@@ -138,6 +139,7 @@ fun HomeScreen(nav: Nav) {
                                 Row(verticalAlignment = Alignment.CenterVertically) { Dot(hex(tp.color), 7.dp); Spacer(Modifier.width(4.dp)); Caption(tp.name) }
                             }
                         }
+                        subs[task.id]?.let { st -> Caption("${st.count { it.done }}/${st.size}  ", modifier = Modifier.padding(end = 4.dp)) }
                         val d = task.deadline!!
                         Caption(Logic.dueText(d, today), color = when { Logic.isOverdue(task, today) -> t.danger; d == today -> t.warn; else -> t.text2 })
                     }

@@ -5,12 +5,16 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QMessageBox, QVBoxLayout
+from PySide6.QtGui import QColor, QDesktopServices
+from PySide6.QtWidgets import (
+    QColorDialog, QComboBox, QDialog, QFileDialog, QHBoxLayout, QMessageBox, QPushButton, QSlider, QVBoxLayout,
+)
 
 from .. import backup, storage
 from ..session import Session
+from . import theme as theme_mod
 from . import widgets as w
+from .theme import theme
 from .security import (
     ConfirmPasswordDialog, PasswordDialog, RecoveryCodeDialog, RestoreDialog, _Busy, human_when, load_backup,
 )
@@ -41,7 +45,7 @@ def _row(*widgets_) -> QHBoxLayout:
 
 class SettingsPage(w.Page):
     def __init__(self, db, navigate, session: Session, window):
-        super().__init__("Настройки", "Пароль и сохранность данных")
+        super().__init__("Настройки", "Синхронизация, оформление и сохранность данных")
         self.db, self.session, self.window = db, session, window
         self.box = QVBoxLayout()
         self.box.setSpacing(12)
@@ -56,9 +60,141 @@ class SettingsPage(w.Page):
         with self.keep_scroll():
             w.clear_layout(self.box)
             self.box.addWidget(self._sync_card())
+            self.box.addWidget(self._appearance_card())
             self.box.addWidget(self._password_card())
             self.box.addWidget(self._backup_card())
             self.box.addWidget(self._storage_card())
+
+    # ---------------------------------------------------------------- оформление
+
+    def _appearance(self) -> dict:
+        return dict(self.session.settings.get("appearance") or {})
+
+    def _set_appearance(self, cfg: dict) -> None:
+        cfg = {k: v for k, v in cfg.items() if v not in (None, "", {})}
+        self.session.settings.set("appearance", cfg or None)
+        theme_mod.set_appearance(cfg)           # окно перекрасится сразу
+
+    def _swatches(self, presets, current: str | None, default: str, on_pick, what: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        cur = (current or default).upper()
+        if cur not in {c.upper() for c, _ in presets}:
+            presets = list(presets) + [(cur, "Свой цвет")]
+        for color, name in presets:
+            b = QPushButton("✓" if color.upper() == cur else "")
+            b.setFixedSize(28, 28)
+            b.setToolTip(name)
+            b.setAccessibleName(f"{what}: {name}")
+            b.setStyleSheet(f"QPushButton {{ background: {color}; border-radius: 14px; color: white; "
+                            f"font-weight: 700; border: 2px solid "
+                            f"{theme['text'] if color.upper() == cur else 'transparent'}; padding: 0; }}")
+            b.clicked.connect(lambda _=False, c=color: on_pick(None if c.upper() == default.upper() else c))
+            row.addWidget(b)
+        other = w.button("Другой…", "ghost")
+
+        def custom():
+            c = QColorDialog.getColor(QColor(cur), self, f"{what} — свой цвет")
+            if c.isValid():
+                on_pick(c.name().upper())
+        other.clicked.connect(custom)
+        row.addWidget(other)
+        row.addStretch()
+        return row
+
+    def _appearance_card(self) -> w.Card:
+        cfg = self._appearance()
+        card = w.Card("Оформление")
+        card.body.addWidget(w.label("Основной цвет — боковая панель, главные кнопки и ссылки.", "secondary", wrap=True))
+        card.body.addLayout(self._swatches(theme_mod.PRIMARY_PRESETS, cfg.get("primary"), "#0F6E6A",
+                                           lambda c: self._set_appearance({**cfg, "primary": c}), "Основной цвет"))
+        card.body.addWidget(w.label("Цвет отметок и прогресса — выполненные привычки, «кирпичики».",
+                                    "secondary", wrap=True))
+        card.body.addLayout(self._swatches(theme_mod.ACCENT_PRESETS, cfg.get("accent"), "#4338CA",
+                                           lambda c: self._set_appearance({**cfg, "accent": c}), "Цвет прогресса"))
+
+        # боковая панель
+        sb = dict(cfg.get("sidebar") or {})
+        card.body.addWidget(w.label("Фон боковой панели", "section"))
+        mode = QComboBox()
+        for key, name in (("primary", "Основной цвет"), ("color", "Свой цвет"), ("image", "Картинка")):
+            mode.addItem(name, key)
+        mode.setCurrentIndex(max(0, mode.findData(sb.get("mode", "primary"))))
+        mode.setAccessibleName("Фон боковой панели")
+        row = [mode]
+        if sb.get("mode") == "color":
+            pick = w.button("Выбрать цвет…")
+            pick.clicked.connect(lambda: self._pick_sidebar_color(cfg, sb))
+            row.append(pick)
+        if sb.get("mode") == "image":
+            pick = w.button("Выбрать картинку…")
+            pick.clicked.connect(lambda: self._pick_sidebar_image(cfg, sb))
+            row.append(pick)
+        card.body.addLayout(_row(*row))
+
+        def mode_changed(_i):
+            key = mode.currentData()
+            new = {**sb, "mode": key}
+            if key == "color" and not sb.get("color"):
+                return self._pick_sidebar_color(cfg, new)
+            if key == "image" and not sb.get("image"):
+                return self._pick_sidebar_image(cfg, new)
+            self._set_appearance({**cfg, "sidebar": new if key != "primary" else None})
+        mode.currentIndexChanged.connect(mode_changed)
+
+        if sb.get("mode") == "image" and sb.get("image"):
+            dim = QSlider(Qt.Horizontal)
+            dim.setRange(0, 75)
+            dim.setValue(int(float(sb.get("dim", 0.4)) * 100))
+            dim.setFixedWidth(220)
+            dim.setAccessibleName("Затемнение картинки")
+            dim.setToolTip("Чем темнее, тем лучше читаются названия разделов")
+            dim.sliderReleased.connect(lambda: self._set_appearance(
+                {**cfg, "sidebar": {**sb, "dim": dim.value() / 100}}))
+            card.body.addLayout(_row(w.label("Затемнение", "secondary"), dim))
+
+        # тема
+        tm = QComboBox()
+        for key, name in (("system", "Как в Windows"), ("light", "Светлая"), ("dark", "Тёмная")):
+            tm.addItem(name, key)
+        tm.setCurrentIndex(max(0, tm.findData(cfg.get("mode", "system"))))
+        tm.setAccessibleName("Тема")
+        tm.currentIndexChanged.connect(lambda _i: self._set_appearance(
+            {**cfg, "mode": None if tm.currentData() == "system" else tm.currentData()}))
+        reset = w.button("Вернуть как было", "ghost")
+        reset.clicked.connect(lambda: self._set_appearance({}))
+        reset.setEnabled(bool(cfg))
+        card.body.addLayout(_row(w.label("Тема", "secondary"), tm, reset))
+        card.body.addWidget(w.label("Цвета подбираются так, чтобы текст оставался читаемым и в тёмной теме. "
+                                    "На телефоне оформление настраивается отдельно.", "caption", wrap=True))
+        return card
+
+    def _pick_sidebar_color(self, cfg: dict, sb: dict) -> None:
+        c = QColorDialog.getColor(QColor(sb.get("color") or theme["teal"]), self, "Цвет боковой панели")
+        if c.isValid():
+            self._set_appearance({**cfg, "sidebar": {**sb, "mode": "color", "color": c.name().upper()}})
+        else:
+            self.refresh()
+
+    def _pick_sidebar_image(self, cfg: dict, sb: dict) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Картинка для боковой панели", str(Path.home()),
+                                              "Изображения (*.png *.jpg *.jpeg *.bmp *.webp)")
+        if not path:
+            self.refresh()
+            return
+        from PySide6.QtGui import QImage
+        img = QImage(path)
+        if img.isNull():
+            QMessageBox.warning(self, "Картинка", "Не удалось открыть этот файл как изображение.")
+            self.refresh()
+            return
+        # копия рядом с данными: картинка не пропадёт, если исходный файл удалят или переместят
+        if img.height() > 1600:
+            img = img.scaledToHeight(1600, Qt.SmoothTransformation)
+        dest = self.session.data_dir / "sidebar.png"
+        img.save(str(dest), "PNG")
+        self._set_appearance({**cfg, "sidebar": {**sb, "mode": "image", "image": str(dest),
+                                                 "dim": sb.get("dim", 0.4)}})
 
     # ---------------------------------------------------------------- синхронизация
 

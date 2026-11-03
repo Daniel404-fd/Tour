@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QDialog, QHBoxLayout, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QStackedWidget, QSystemTrayIcon, QWidget,
@@ -38,6 +38,36 @@ HOME, CALENDAR, HABITS, TASKS, GOALS, NOTES, STATS, SETTINGS = range(len(SECTION
 KEY_INDEX = {key: i for i, (key, _, _) in enumerate(SECTIONS)}
 
 
+class SidebarPanel(QWidget):
+    """Подложка боковой панели: цвет или картинка (с затемнением, чтобы читались подписи)."""
+
+    def __init__(self):
+        super().__init__()
+        self._path = None
+        self._pix: QPixmap | None = None
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(theme["sidebar_bg"]))
+        path = theme.t.get("sidebar_image") or ""
+        import os
+        key = (path, os.path.getmtime(path) if path and os.path.exists(path) else 0)
+        if key != self._path:
+            self._path = key
+            pix = QPixmap(path) if path else QPixmap()
+            self._pix = None if pix.isNull() else pix
+        if self._pix is not None:
+            # «заполнить»: масштаб с сохранением пропорций, лишнее обрезается по центру
+            scaled = self._pix.scaled(self.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            x = (scaled.width() - self.width()) // 2
+            y = (scaled.height() - self.height()) // 2
+            p.drawPixmap(0, 0, scaled, x, y, self.width(), self.height())
+            dim = float(theme.t.get("sidebar_dim", 0.4))
+            if dim > 0:
+                p.fillRect(self.rect(), QColor(0, 0, 0, int(255 * dim)))
+        p.end()
+
+
 class MainWindow(QMainWindow):
     def __init__(self, session):
         super().__init__()
@@ -59,11 +89,17 @@ class MainWindow(QMainWindow):
         self.sidebar.setIconSize(QSize(20, 20))
         self.sidebar.setAccessibleName("Разделы")
         self.sidebar.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sidebar.viewport().setAutoFillBackground(False)
         for i, (_, title, _) in enumerate(SECTIONS):
             item = QListWidgetItem(title)
             item.setToolTip(f"{title} (Ctrl+{i + 1})")
             self.sidebar.addItem(item)
-        lay.addWidget(self.sidebar)
+        self.sidebar_panel = SidebarPanel()
+        self.sidebar_panel.setFixedWidth(200)
+        sp = QHBoxLayout(self.sidebar_panel)
+        sp.setContentsMargins(0, 0, 0, 0)
+        sp.addWidget(self.sidebar)
+        lay.addWidget(self.sidebar_panel)
 
         self.stack = QStackedWidget()
         lay.addWidget(self.stack, 1)
@@ -148,7 +184,8 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(page)
         for i, (key, _, _) in enumerate(SECTIONS):
             self.sidebar.item(i).setIcon(
-                icons.icon(key, theme["teal_text"], selected=theme["teal_text"]))
+                icons.icon(key, theme["sidebar_text"], selected=theme["sidebar_text"]))
+        self.sidebar_panel.update()
         if current >= 0:
             self.stack.setCurrentIndex(current)
 

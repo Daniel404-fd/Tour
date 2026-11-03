@@ -29,6 +29,7 @@ class Db(context: Context, name: String? = "tracker.sqlite3") :
                 val c = db.rawQuery("SELECT 1 FROM calendars LIMIT 1", null)
                 val has = c.moveToFirst(); c.close()
                 if (!has) db.execSQL("INSERT INTO calendars(name, color) VALUES ('Личное', '#0B6E69')")
+                onCreate(db)                      // новые таблицы для баз прежних версий (всё IF NOT EXISTS)
                 SyncSchema.install(db)
                 db.setTransactionSuccessful()
             } finally {
@@ -91,6 +92,13 @@ CREATE TABLE IF NOT EXISTS goal_contributions (
     day     TEXT    NOT NULL,
     amount  REAL    NOT NULL,
     note    TEXT    NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS task_subtasks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    title    TEXT    NOT NULL,
+    done     INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS note_folders (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,6 +163,7 @@ object SyncSchema {
         "goal_contributions" to (listOf("goal_id", "day", "amount", "note") to mapOf("goal_id" to "goals")),
         "tasks" to (listOf("title", "description", "deadline", "priority", "done", "completed_on",
             "archived", "topic_id") to mapOf("topic_id" to "topics")),
+        "task_subtasks" to (listOf("task_id", "title", "done", "position") to mapOf("task_id" to "tasks")),
         "notes" to (listOf("title", "body", "pinned", "created_at", "updated_at", "folder_id") to
             mapOf("folder_id" to "note_folders")),
         "events" to (listOf("title", "start", "end", "all_day", "calendar_id", "color", "description",
@@ -162,7 +171,7 @@ object SyncSchema {
             mapOf("calendar_id" to "calendars")),
     )
     val REQUIRED_REFS = setOf("habit_marks.habit_id", "goal_steps.goal_id",
-        "goal_contributions.goal_id", "events.calendar_id")
+        "goal_contributions.goal_id", "events.calendar_id", "task_subtasks.task_id")
 
     fun install(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS sync_tombstones (uid TEXT PRIMARY KEY, tbl TEXT NOT NULL, ts TEXT NOT NULL)")

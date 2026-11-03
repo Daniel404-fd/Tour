@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -508,10 +512,53 @@ fun SettingsScreen(nav: Nav) {
                 }, colors = ButtonDefaults.buttonColors(containerColor = t.teal)) { Text("Подключить") }
             }
         }
+        AppearanceCard()
         Card("Где хранятся данные") {
             Secondary("Все данные лежат только на телефоне, в личной папке приложения. Если включена синхронизация — ещё и на вашем Яндекс Диске, в папке «HabitTracker-sync».")
-            Caption("Трекер для Android, версия 1.0.0")
+            Caption("Трекер для Android, версия 1.1.0")
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+// ---------------------------------------------------------------- оформление
+
+@Composable
+private fun AppearanceCard() {
+    val t = tok
+    Card("Оформление") {
+        Secondary("Основной цвет — кнопки, ссылки, выбранная вкладка.")
+        Swatches(PRIMARY_PRESETS, Appearance.primary ?: PRIMARY_PRESETS[0].first, "Основной цвет") {
+            Appearance.update(primary = if (it == PRIMARY_PRESETS[0].first) null else it)
+        }
+        Secondary("Цвет отметок и прогресса.")
+        Swatches(ACCENT_PRESETS, Appearance.accent ?: ACCENT_PRESETS[0].first, "Цвет прогресса") {
+            Appearance.update(accent = if (it == ACCENT_PRESETS[0].first) null else it)
+        }
+        Secondary("Тема")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("system" to "Как в системе", "light" to "Светлая", "dark" to "Тёмная").forEach { (k, n) ->
+                Chip(n, Appearance.mode == k) { Appearance.update(mode = k) }
+            }
+        }
+        if (Appearance.primary != null || Appearance.accent != null || Appearance.mode != "system")
+            TextButton(onClick = { Appearance.reset() }) { Text("Вернуть как было") }
+        Caption("Цвета подстраиваются, чтобы текст читался и в тёмной теме. На компьютере оформление настраивается отдельно.")
+    }
+}
+
+@Composable
+private fun Swatches(presets: List<Pair<String, String>>, current: String, what: String, onPick: (String) -> Unit) {
+    val t = tok
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        presets.forEach { (c, name) ->
+            val sel = c.equals(current, true)
+            Box(Modifier.size(40.dp).clip(androidx.compose.foundation.shape.CircleShape).background(hex(c))
+                .border(if (sel) 3.dp else 0.dp, t.text, androidx.compose.foundation.shape.CircleShape)
+                .clickable(onClickLabel = "$what: $name") { onPick(c) },
+                contentAlignment = Alignment.Center) {
+                if (sel) Icon(androidx.compose.material.icons.Icons.Filled.Check, "$what: $name, выбран", tint = Color.White)
+            }
+        }
     }
 }

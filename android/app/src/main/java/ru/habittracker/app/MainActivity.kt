@@ -14,6 +14,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.unit.dp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Checklist
@@ -101,13 +103,15 @@ fun Root(start: String) {
     Scaffold(containerColor = t.bg, bottomBar = {
         NavigationBar(containerColor = t.surface) {
             TABS.forEach { tab ->
+                // только иконки: подписи занимали место и переносились («Календа-рь»); название — для TalkBack
                 NavigationBarItem(selected = nav.tab == tab.key, onClick = {
                     if (nav.tab == tab.key && tab.key == "more") { nav.more = null; nav.goalId = null; nav.noteId = null }
                     nav.tab = tab.key
                 },
-                    icon = { Icon(tab.icon, contentDescription = null) }, label = { Text(tab.title) },
+                    icon = { Icon(tab.icon, contentDescription = tab.title, modifier = Modifier.size(26.dp)) },
+                    alwaysShowLabel = false,
                     colors = NavigationBarItemDefaults.colors(indicatorColor = t.tealSoft, selectedIconColor = t.tealOnSoft,
-                        selectedTextColor = t.tealOnSoft))
+                        selectedTextColor = t.tealOnSoft, unselectedIconColor = t.text2))
             }
         }
     }) { pad ->

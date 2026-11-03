@@ -7,7 +7,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from .logic import Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Task, Topic
+from .logic import Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
 from .cal import EVENT_COLORS, CalendarInfo, Event
 from . import sync
 from .storage import PlainStore
@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS goal_contributions (
     day     TEXT    NOT NULL,
     amount  REAL    NOT NULL,
     note    TEXT    NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS task_subtasks (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id  INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    title    TEXT    NOT NULL,
+    done     INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS note_folders (
     id   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -460,6 +467,43 @@ class Database:
         for r in self.conn.execute("SELECT id, goal_id, title, done, position FROM goal_steps"
                                    " ORDER BY position, id"):
             result.setdefault(r[1], []).append(GoalStep(r[0], r[1], r[2], bool(r[3]), r[4]))
+        return result
+
+    # ----- подзадачи -----
+
+    def add_subtask(self, task_id: int, title: str) -> int:
+        pos = self.conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM task_subtasks"
+                                " WHERE task_id = ?", (task_id,)).fetchone()[0]
+        cur = self.conn.execute(
+            "INSERT INTO task_subtasks(task_id, title, position) VALUES (?, ?, ?)",
+            (task_id, title, pos))
+        self._commit()
+        return cur.lastrowid
+
+    def set_subtask_done(self, sub_id: int, done: bool) -> None:
+        self.conn.execute("UPDATE task_subtasks SET done = ? WHERE id = ?", (int(done), sub_id))
+        self._commit()
+
+    def rename_subtask(self, sub_id: int, title: str) -> None:
+        self.conn.execute("UPDATE task_subtasks SET title = ? WHERE id = ?", (title, sub_id))
+        self._commit()
+
+    def set_subtask_position(self, sub_id: int, position: int) -> None:
+        self.conn.execute("UPDATE task_subtasks SET position = ? WHERE id = ?", (position, sub_id))
+        self._commit()
+
+    def delete_subtask(self, sub_id: int) -> None:
+        self.conn.execute("DELETE FROM task_subtasks WHERE id = ?", (sub_id,))
+        self._commit()
+
+    def subtasks(self, task_id: int) -> list[Subtask]:
+        return self.all_subtasks().get(task_id, [])
+
+    def all_subtasks(self) -> dict[int, list[Subtask]]:
+        result: dict[int, list[Subtask]] = {}
+        for r in self.conn.execute("SELECT id, task_id, title, done, position FROM task_subtasks"
+                                   " ORDER BY position, id"):
+            result.setdefault(r[1], []).append(Subtask(r[0], r[1], r[2], bool(r[3]), r[4]))
         return result
 
     # ----- заметки -----

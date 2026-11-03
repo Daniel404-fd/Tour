@@ -44,6 +44,8 @@ def _path(name: str) -> tuple[QPainterPath, QPainterPath | None]:
             p.addRoundedRect(QRectF(x, top, 3, 20.5 - top - 2), 1, 1)
     elif name == "plus":
         p.moveTo(12, 5); p.lineTo(12, 19); p.moveTo(5, 12); p.lineTo(19, 12)
+    elif name == "minus":
+        p.moveTo(5, 12); p.lineTo(19, 12)
     elif name == "more":
         fill = QPainterPath()
         for x in (6, 12, 18):

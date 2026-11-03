@@ -21,7 +21,9 @@ def make(out: Path):
         h = db.add_habit("Зарядка", created_on=date(2026, 1, 1))
         db.set_mark(h, date(2026, 1, 2), True)
         tp = db.add_topic("Работа", "#000080")
-        db.add_task(Task(0, "Сдать отчёт", deadline=date(2026, 2, 1), topic_id=tp))
+        tid = db.add_task(Task(0, "Сдать отчёт", deadline=date(2026, 2, 1), topic_id=tp))
+        db.add_subtask(tid, "Собрать цифры")
+        db.set_subtask_done(db.add_subtask(tid, "Отправить"), True)
         g = db.add_goal(Goal(0, "Отпуск", financial=True, target_amount=100000.0))
         db.add_contribution(g, 2500.5, date(2026, 1, 3), "аванс")
         db.add_step(g, "Выбрать страну")
@@ -43,7 +45,8 @@ def check(src: Path):
         assert "Пробежка" in habits, habits
         hid = next(x.id for x in db.list_habits() if x.name == "Пробежка")
         assert date(2026, 3, 1) in db.marks(hid)
-        assert any(t.title == "Позвонить маме" for t in db.list_tasks())
+        t = next(t for t in db.list_tasks() if t.title == "Позвонить маме")
+        assert [(x.title, x.done) for x in db.subtasks(t.id)] == [("Купить цветы", True), ("Позвонить", False)]
         assert any(n.title == "С телефона" for n in db.list_notes())
         assert any(e.title == "Врач" for e in db.list_events())
         g = next(x for x in db.list_goals() if x.title == "Машина")

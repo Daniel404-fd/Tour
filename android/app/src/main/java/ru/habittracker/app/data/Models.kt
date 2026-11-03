@@ -28,6 +28,11 @@ data class Goal(
     val completedOn: LocalDate? = null, val financial: Boolean = false, val targetAmount: Double = 0.0,
 )
 
+data class Subtask(val id: Long, val taskId: Long, val title: String, val done: Boolean, val position: Int)
+
+/** Строка редактора подзадач: id = 0 — новая, ещё не сохранённая. */
+data class SubtaskDraft(val id: Long, val title: String, val done: Boolean)
+
 data class GoalStep(val id: Long, val goalId: Long, val title: String, val done: Boolean, val position: Int)
 
 data class Contribution(val id: Long, val goalId: Long, val day: LocalDate, val amount: Double, val note: String)

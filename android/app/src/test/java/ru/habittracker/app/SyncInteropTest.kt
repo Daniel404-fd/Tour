@@ -12,6 +12,7 @@ import ru.habittracker.app.data.Event
 import ru.habittracker.app.data.Goal
 import ru.habittracker.app.data.Repo
 import ru.habittracker.app.data.Sync
+import ru.habittracker.app.data.SubtaskDraft
 import ru.habittracker.app.data.Task
 import java.io.File
 import java.time.LocalDate
@@ -32,6 +33,7 @@ class SyncInteropTest {
         assertTrue(LocalDate.of(2026, 1, 2) in (repo.allMarks()[h.id] ?: emptySet()))
         val task = repo.tasks().first { it.title == "Сдать отчёт" }
         assertEquals("Работа", repo.topics().first { it.id == task.topicId }.name)
+        assertEquals(listOf("Собрать цифры" to false, "Отправить" to true), repo.subtasks(task.id).map { it.title to it.done })
         val g = repo.goals().first { it.title == "Отпуск" }
         assertTrue(g.financial)
         assertEquals(2500.5, repo.savedAmounts()[g.id]!!, 0.001)
@@ -67,13 +69,45 @@ class SyncInteropTest {
         assertTrue(b.habits().isEmpty())
     }
 
+    @Test
+    fun subtasksEditorDiff() {
+        val repo = newRepo()
+        val tid = repo.addTask(Task(title = "Переезд"))
+        repo.applySubtasks(tid, listOf(SubtaskDraft(0, "a", false), SubtaskDraft(0, "b", true)))
+        val (a, b) = repo.subtasks(tid)
+        repo.applySubtasks(tid, listOf(SubtaskDraft(b.id, "b2", true), SubtaskDraft(0, "c", false)))
+        assertEquals(listOf("b2" to true, "c" to false), repo.subtasks(tid).map { it.title to it.done })
+        assertTrue(repo.subtasks(tid).none { it.id == a.id })
+        repo.deleteTask(tid)
+        assertTrue(repo.allSubtasks().isEmpty())
+    }
+
+    @Test
+    fun customColorsStayReadable() {
+        for (dark in listOf(false, true)) for (c in listOf("#FFD700", "#000000", "#BE185D", "#0F6E6A")) {
+            val t = ru.habittracker.app.ui.derive(if (dark) ru.habittracker.app.ui.DarkTokens else ru.habittracker.app.ui.LightTokens, dark, c, c)
+            val r = ru.habittracker.app.ui.Contrast::ratio
+            assertTrue("$c teal", r(t.tealText, t.teal) >= 4.5)
+            assertTrue("$c link", r(t.link, t.surface) >= 4.5)
+            assertTrue("$c accent", r(t.accentText, t.accent) >= 4.5)
+            assertTrue("$c onSoft", r(t.tealOnSoft, t.tealSoft) >= 4.5)
+        }
+        // стандартные токены тоже: вторичный текст и ссылки на карточке
+        for (t in listOf(ru.habittracker.app.ui.LightTokens, ru.habittracker.app.ui.DarkTokens)) {
+            assertTrue(ru.habittracker.app.ui.Contrast.ratio(t.text2, t.surface) >= 7.0)
+            assertTrue(ru.habittracker.app.ui.Contrast.ratio(t.text3, t.surface) >= 4.5)
+            assertTrue(ru.habittracker.app.ui.Contrast.ratio(t.link, t.surface) >= 4.5)
+        }
+    }
+
     /** Файл «как с телефона» — его проверяет tools/interop.py check на стороне ПК (в CI). */
     @Test
     fun writesFileForDesktop() {
         val repo = newRepo()
         val h = repo.addHabit("Пробежка")
         repo.setMark(h, LocalDate.of(2026, 3, 1), true)
-        repo.addTask(Task(title = "Позвонить маме", deadline = LocalDate.of(2026, 3, 8)))
+        val tid = repo.addTask(Task(title = "Позвонить маме", deadline = LocalDate.of(2026, 3, 8)))
+        repo.applySubtasks(tid, listOf(SubtaskDraft(0, "Купить цветы", true), SubtaskDraft(0, "Позвонить", false)))
         val n = repo.addNote(); repo.updateNote(n, "С телефона", "Текст")
         repo.addEvent(Event(title = "Врач", start = LocalDateTime.of(2026, 3, 2, 10, 0), end = LocalDateTime.of(2026, 3, 2, 11, 0),
             calendarId = repo.calendars()[0].id, reminder = 30))

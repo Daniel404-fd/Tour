@@ -24,6 +24,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -57,6 +62,8 @@ import ru.habittracker.app.Nav
 import ru.habittracker.app.data.Logic
 import ru.habittracker.app.data.PRIORITY_HIGH
 import ru.habittracker.app.data.PRIORITY_NAMES
+import ru.habittracker.app.data.Subtask
+import ru.habittracker.app.data.SubtaskDraft
 import ru.habittracker.app.data.TOPIC_COLORS
 import ru.habittracker.app.data.Task
 import ru.habittracker.app.data.Topic
@@ -67,12 +74,17 @@ import java.time.LocalDate
 private val STATUSES = listOf("active" to "Активные", "done" to "Выполненные", "all" to "Все", "archived" to "Архив")
 private const val TOPIC_ALL = -1L
 private const val TOPIC_NONE = 0L
+/** Больше тем — вместо ряда кнопок выпадающий список (иначе ряд приходится долго листать). */
+const val TOPIC_CHIP_LIMIT = 6
 
 @Composable
 fun TasksScreen(nav: Nav) {
     val repo = App.instance.repo
     var status by remember { mutableStateOf("active") }
-    var topic by remember { mutableStateOf(TOPIC_ALL) }
+    var topic by remember { mutableStateOf(repo.pref("tasks_topic", "-1")!!.toLongOrNull() ?: TOPIC_ALL) }
+    fun pickTopic(v: Long) { topic = v; repo.setPref("tasks_topic", v.toString()) }
+    var expanded by remember { mutableStateOf(setOf<Long>()) }
+    val subs = useData { repo.allSubtasks() }
     var editing by remember { mutableStateOf<Task?>(null) }
     var topicsDialog by remember { mutableStateOf(false) }
     val all = useData { repo.tasks() }
@@ -86,9 +98,12 @@ fun TasksScreen(nav: Nav) {
         nav.taskId = null
     }
 
-    val shown = Logic.sortTasks(all.filter {
+    if (topic > 0 && topics.none { it.id == topic }) topic = TOPIC_ALL
+    val byStatus = all.filter {
         when (status) { "archived" -> it.archived; "active" -> !it.archived && !it.done; "done" -> !it.archived && it.done; else -> !it.archived }
-    }.filter { when (topic) { TOPIC_ALL -> true; TOPIC_NONE -> it.topicId == null; else -> it.topicId == topic } })
+    }
+    val counts = byStatus.groupingBy { it.topicId ?: TOPIC_NONE }.eachCount()
+    val shown = Logic.sortTasks(byStatus.filter { when (topic) { TOPIC_ALL -> true; TOPIC_NONE -> it.topicId == null; else -> it.topicId == topic } })
 
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
@@ -109,11 +124,13 @@ fun TasksScreen(nav: Nav) {
                     STATUSES.forEach { (k, n) -> Chip(n, status == k) { status = k } }
                 }
                 Spacer(Modifier.height(6.dp))
-                if (topics.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
+                if (topics.size > TOPIC_CHIP_LIMIT) Box(Modifier.padding(horizontal = 16.dp)) {
+                    TopicDropdown(topics, topic, counts, byStatus.size) { pickTopic(it) }
+                } else if (topics.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Chip("Все темы", topic == TOPIC_ALL) { topic = TOPIC_ALL }
-                    topics.forEach { tp -> Chip(tp.name, topic == tp.id, dot = hex(tp.color)) { topic = tp.id } }
-                    Chip("Без темы", topic == TOPIC_NONE) { topic = TOPIC_NONE }
+                    Chip("Все темы", topic == TOPIC_ALL) { pickTopic(TOPIC_ALL) }
+                    topics.forEach { tp -> Chip(tp.name + (counts[tp.id]?.let { " $it" } ?: ""), topic == tp.id, dot = hex(tp.color)) { pickTopic(tp.id) } }
+                    Chip("Без темы", topic == TOPIC_NONE) { pickTopic(TOPIC_NONE) }
                 }
                 Spacer(Modifier.height(8.dp))
             }
@@ -123,7 +140,9 @@ fun TasksScreen(nav: Nav) {
                 }
             }
             items(shown, key = { it.id }) { task ->
-                TaskRow(task, byId[task.topicId], today, onOpen = { editing = task })
+                TaskRow(task, byId[task.topicId], today, subs[task.id] ?: emptyList(), task.id in expanded,
+                    onToggleExpand = { expanded = if (task.id in expanded) expanded - task.id else expanded + task.id },
+                    onOpen = { editing = task })
                 HorizontalDivider(color = t.border, modifier = Modifier.padding(start = 60.dp))
             }
             item { Spacer(Modifier.height(88.dp)) }
@@ -137,13 +156,41 @@ fun TasksScreen(nav: Nav) {
     if (topicsDialog) TopicsDialog(topics) { topicsDialog = false }
 }
 
+/** Выпадающий фильтр тем: с количеством задач в каждой. */
 @Composable
-private fun TaskRow(task: Task, topic: Topic?, today: LocalDate, onOpen: () -> Unit) {
+fun TopicDropdown(topics: List<Topic>, selected: Long, counts: Map<Long, Int>, total: Int, onPick: (Long) -> Unit) {
+    val t = tok
+    var open by remember { mutableStateOf(false) }
+    val cur = topics.firstOrNull { it.id == selected }
+    Box {
+        Row(Modifier.clip(RoundedCornerShape(16.dp)).background(if (selected != TOPIC_ALL) t.tealSoft else t.surface)
+            .border(1.dp, if (selected != TOPIC_ALL) t.teal else t.borderStrong, RoundedCornerShape(16.dp))
+            .clickable { open = true }.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (cur != null) { Dot(hex(cur.color)); Spacer(Modifier.width(6.dp)) }
+            Text("Тема: " + when (selected) { TOPIC_ALL -> "все"; TOPIC_NONE -> "без темы"; else -> cur?.name ?: "все" },
+                color = if (selected != TOPIC_ALL) t.tealOnSoft else t.text, fontSize = 14.sp)
+            Icon(Icons.Filled.KeyboardArrowDown, null, tint = t.text2)
+        }
+        DropdownMenu(open, { open = false }) {
+            DropdownMenuItem(text = { Text("Все темы · $total") }, onClick = { open = false; onPick(TOPIC_ALL) })
+            topics.forEach { tp ->
+                DropdownMenuItem(text = { Text("${tp.name} · ${counts[tp.id] ?: 0}") }, leadingIcon = { Dot(hex(tp.color), 10.dp) },
+                    onClick = { open = false; onPick(tp.id) })
+            }
+            DropdownMenuItem(text = { Text("Без темы · ${counts[TOPIC_NONE] ?: 0}") }, onClick = { open = false; onPick(TOPIC_NONE) })
+        }
+    }
+}
+
+@Composable
+private fun TaskRow(task: Task, topic: Topic?, today: LocalDate, subs: List<Subtask>, expanded: Boolean,
+                    onToggleExpand: () -> Unit, onOpen: () -> Unit) {
     val repo = App.instance.repo
     val t = tok
     val overdue = Logic.isOverdue(task, today)
     val dueToday = Logic.isDueToday(task, today)
-    Row(Modifier.fillMaxWidth().background(if (overdue) t.dangerSoft else if (dueToday) t.warnSoft else t.bg)
+    Column(Modifier.fillMaxWidth().background(if (overdue) t.dangerSoft else if (dueToday) t.warnSoft else t.bg)) {
+    Row(Modifier.fillMaxWidth()
         .clickable(onClick = onOpen).padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(task.done, { repo.updateTask(task.copy(done = it, completedOn = null)) },
             colors = CheckboxDefaults.colors(checkedColor = t.accent, checkmarkColor = t.accentText))
@@ -157,6 +204,57 @@ private fun TaskRow(task: Task, topic: Topic?, today: LocalDate, onOpen: () -> U
                     Caption(txt, color = when { overdue -> t.danger; dueToday -> t.warn; else -> t.text2 })
                 }
             }
+        }
+        if (subs.isNotEmpty()) {
+            val done = subs.count { it.done }
+            Row(Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onToggleExpand).padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text("$done/${subs.size}", fontSize = 14.sp, color = if (done == subs.size) t.accent else t.text2, fontWeight = FontWeight.Medium)
+                Icon(if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    if (expanded) "Скрыть подзадачи" else "Показать подзадачи", tint = t.text2)
+            }
+        }
+    }
+    if (expanded) subs.forEach { st ->
+        Row(Modifier.fillMaxWidth().clickable { repo.setSubtaskDone(st.id, !st.done) }.padding(start = 44.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(st.done, { repo.setSubtaskDone(st.id, it) },
+                colors = CheckboxDefaults.colors(checkedColor = t.accent, checkmarkColor = t.accentText))
+            Text(st.title, color = if (st.done) t.text2 else t.text, fontSize = 15.sp,
+                textDecoration = if (st.done) TextDecoration.LineThrough else null)
+        }
+    }
+    }
+}
+
+/** Редактор подзадач в диалоге задачи: сохраняется вместе с задачей. */
+@Composable
+fun SubtaskEditor(items: List<SubtaskDraft>, onChange: (List<SubtaskDraft>) -> Unit) {
+    val t = tok
+    var newTitle by remember { mutableStateOf("") }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Caption(if (items.isEmpty()) "Подзадачи — разбейте задачу на шаги" else "Подзадачи · ${items.count { it.done }} из ${items.size}")
+        items.forEachIndexed { i, d ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(d.done, { v -> onChange(items.toMutableList().also { it[i] = d.copy(done = v) }) },
+                    colors = CheckboxDefaults.colors(checkedColor = t.accent, checkmarkColor = t.accentText))
+                Text(d.title, Modifier.weight(1f), color = if (d.done) t.text2 else t.text,
+                    textDecoration = if (d.done) TextDecoration.LineThrough else null)
+                IconButton(onClick = { onChange(items.filterIndexed { k, _ -> k != i }) }) {
+                    Icon(Icons.Filled.Close, "Удалить подзадачу «${d.title}»", tint = t.text2)
+                }
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(newTitle, { newTitle = it }, placeholder = { Text("Новая подзадача") }, singleLine = true,
+                modifier = Modifier.weight(1f),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = {
+                    if (newTitle.isNotBlank()) { onChange(items + SubtaskDraft(0, newTitle.trim(), false)); newTitle = "" }
+                }))
+            IconButton(enabled = newTitle.isNotBlank(), onClick = {
+                onChange(items + SubtaskDraft(0, newTitle.trim(), false)); newTitle = ""
+            }) { Icon(Icons.Filled.Add, "Добавить подзадачу") }
         }
     }
 }
@@ -172,6 +270,7 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
     var topicId by remember { mutableStateOf(task.topicId) }
     var done by remember { mutableStateOf(task.done) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var drafts by remember { mutableStateOf(repo.subtasks(task.id).map { SubtaskDraft(it.id, it.title, it.done) }) }
     val t = tok
     AlertDialog(onDismissRequest = onClose, title = { Text(if (task.id == 0L) "Новая задача" else "Задача") },
         text = {
@@ -189,13 +288,29 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PRIORITY_NAMES.forEach { (k, n) -> Chip(n, priority == k) { priority = k } }
                 }
-                if (topics.isNotEmpty()) {
+                if (topics.size > TOPIC_CHIP_LIMIT) {
+                    Caption("Тема")
+                    var open by remember { mutableStateOf(false) }
+                    Box {
+                        val cur = topics.firstOrNull { it.id == topicId }
+                        OutlinedButton(onClick = { open = true }) {
+                            if (cur != null) { Dot(hex(cur.color)); Spacer(Modifier.width(6.dp)) }
+                            Text(cur?.name ?: "Без темы"); Icon(Icons.Filled.KeyboardArrowDown, null)
+                        }
+                        DropdownMenu(open, { open = false }) {
+                            DropdownMenuItem(text = { Text("Без темы") }, onClick = { topicId = null; open = false })
+                            topics.forEach { tp -> DropdownMenuItem(text = { Text(tp.name) }, leadingIcon = { Dot(hex(tp.color), 10.dp) },
+                                onClick = { topicId = tp.id; open = false }) }
+                        }
+                    }
+                } else if (topics.isNotEmpty()) {
                     Caption("Тема")
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Chip("Без темы", topicId == null) { topicId = null }
                         topics.forEach { tp -> Chip(tp.name, topicId == tp.id, dot = hex(tp.color)) { topicId = tp.id } }
                     }
                 }
+                SubtaskEditor(drafts) { drafts = it }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(done, { done = it }, colors = CheckboxDefaults.colors(checkedColor = t.accent)); Text("Выполнена")
                 }
@@ -211,7 +326,8 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
             TextButton(enabled = title.isNotBlank(), onClick = {
                 val upd = task.copy(title = title.trim(), description = desc.trim(), deadline = deadline, priority = priority,
                     topicId = topicId, done = done, completedOn = if (done && task.done) task.completedOn else null)
-                if (task.id == 0L) repo.addTask(upd) else repo.updateTask(upd)
+                val id = if (task.id == 0L) repo.addTask(upd) else { repo.updateTask(upd); task.id }
+                repo.applySubtasks(id, drafts)
                 onClose()
             }) { Text("Сохранить") }
         },

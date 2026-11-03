@@ -60,6 +60,11 @@ class _Theme(QObject):
         super().__init__()
         self.dark = False
         self.t = dict(LIGHT)
+        # Оформление пользователя (settings.json → "appearance"):
+        # primary — основной цвет (панель, кнопки, ссылки), accent — цвет «выполнено/прогресс»,
+        # sidebar — {"mode": "primary" | "color" | "image", "color": "#…", "image": путь, "dim": 0..0.8},
+        # mode — "system" | "light" | "dark".
+        self.custom: dict = {}
 
     def __getitem__(self, key: str) -> str:
         return self.t[key]
@@ -78,6 +83,97 @@ def topic_color(hex_color: str) -> QColor:
         h, s, l, a = c.getHslF()
         c = QColor.fromHslF(h, min(s, 0.7), max(l, 0.62), a)
     return c
+
+
+# ---------------------------------------------------------------- свои цвета
+
+PRIMARY_PRESETS = [("#0F6E6A", "Бирюзовый"), ("#1D4ED8", "Синий"), ("#4338CA", "Индиго"),
+                   ("#7E22CE", "Фиолетовый"), ("#BE185D", "Малиновый"), ("#B91C1C", "Красный"),
+                   ("#B45309", "Янтарный"), ("#15803D", "Зелёный"), ("#374151", "Графит")]
+ACCENT_PRESETS = [("#4338CA", "Индиго"), ("#1D4ED8", "Синий"), ("#0F766E", "Бирюзовый"),
+                  ("#15803D", "Зелёный"), ("#B45309", "Янтарный"), ("#BE185D", "Малиновый"),
+                  ("#7E22CE", "Фиолетовый")]
+
+
+def _lum(c: QColor) -> float:
+    def ch(v: float) -> float:
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * ch(c.redF()) + 0.7152 * ch(c.greenF()) + 0.0722 * ch(c.blueF())
+
+
+def contrast(a: str | QColor, b: str | QColor) -> float:
+    la, lb = _lum(QColor(a)), _lum(QColor(b))
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def mix(a: str, b: str, t: float) -> str:
+    """Смесь цветов: t=0 → a, t=1 → b."""
+    ca, cb = QColor(a), QColor(b)
+    return QColor(round(ca.red() + (cb.red() - ca.red()) * t), round(ca.green() + (cb.green() - ca.green()) * t),
+                  round(ca.blue() + (cb.blue() - ca.blue()) * t)).name().upper()
+
+
+def _shift_light(color: str, against: str, target: float, lighter: bool) -> str:
+    """Темнее/светлее цвет, пока контраст с against не станет ≥ target (оттенок сохраняется)."""
+    c = QColor(color)
+    h, s, l, _ = c.getHslF()
+    h = max(h, 0.0)
+    for _ in range(60):
+        if contrast(c, against) >= target:
+            break
+        l = min(1.0, l + 0.02) if lighter else max(0.0, l - 0.02)
+        c = QColor.fromHslF(h, s, l)
+    return c.name().upper()
+
+
+def derive(base: dict, dark: bool, custom: dict) -> dict:
+    """Палитра с учётом своих цветов; контраст текста не опускается ниже 4.5:1."""
+    t = dict(base)
+    white, ink = "#FFFFFF", "#1A1C1E"
+    primary = custom.get("primary")
+    if primary:
+        # фон кнопок и панели с белым текстом
+        fill = _shift_light(primary, white, 4.8, lighter=False)
+        if dark:
+            fill = mix(fill, "#000000", 0.25)
+        t.update(teal=fill, teal_hover=mix(fill, "#000000", 0.15), teal_text=white,
+                 teal_soft=mix(t["surface"], fill, 0.16 if not dark else 0.35),
+                 selection=mix(t["surface"], fill, 0.14 if not dark else 0.32),
+                 today_bg=mix(t["bg"], fill, 0.10 if not dark else 0.22))
+        t["teal_on_soft"] = _shift_light(primary, t["teal_soft"], 5.0, lighter=dark)
+        t["link"] = _shift_light(primary, t["surface"], 4.8, lighter=dark)
+    accent = custom.get("accent")
+    if accent:
+        if dark:
+            a = _shift_light(accent, t["surface"], 5.0, lighter=True)
+            t.update(accent=a, accent_hover=mix(a, white, 0.15), accent_text="#121212")
+            if contrast(a, "#121212") < 4.5:
+                t["accent_text"] = white
+        else:
+            a = _shift_light(accent, white, 5.0, lighter=False)
+            t.update(accent=a, accent_hover=mix(a, "#000000", 0.15), accent_text=white)
+        t["accent_soft"] = mix(t["surface"], t["accent"], 0.16 if not dark else 0.3)
+        t["accent_on_soft"] = _shift_light(t["accent"], t["accent_soft"], 5.0, lighter=dark)
+    # боковая панель
+    sb = custom.get("sidebar") or {}
+    mode = sb.get("mode", "primary")
+    t["sidebar_image"] = ""
+    t["sidebar_dim"] = 0.0
+    if mode == "color" and sb.get("color"):
+        bg = sb["color"]
+    else:
+        bg = t["teal"]
+    if mode == "image" and sb.get("image"):
+        t["sidebar_image"] = sb["image"]
+        t["sidebar_dim"] = float(sb.get("dim", 0.4))
+        bg = t["teal"]
+    t["sidebar_bg"] = bg
+    light_text = mode == "image" or contrast(white, bg) >= 4.5
+    t["sidebar_text"] = white if light_text else ink
+    t["sidebar_hover"] = "rgba(255, 255, 255, 0.12)" if light_text else "rgba(0, 0, 0, 0.07)"
+    t["sidebar_sel"] = "rgba(255, 255, 255, 0.22)" if light_text else "rgba(0, 0, 0, 0.12)"
+    return t
 
 
 def _system_is_dark() -> bool:
@@ -121,12 +217,12 @@ def _qss(t: dict) -> str:
                 border-radius: 6px; }}
 
     /* ---- навигация: бирюзовая панель ---- */
-    QListWidget#sidebar {{ background: {t['teal']}; border: none; padding: 16px 10px; outline: none; }}
+    QListWidget#sidebar {{ background: transparent; border: none; padding: 16px 10px; outline: none; }}
     QListWidget#sidebar:focus {{ border: none; }}
-    QListWidget#sidebar::item {{ height: 36px; padding-left: 10px; color: {t['teal_text']};
+    QListWidget#sidebar::item {{ height: 36px; padding-left: 10px; color: {t['sidebar_text']};
                                  margin-bottom: 2px; border-radius: 8px; }}
-    QListWidget#sidebar::item:hover {{ background: rgba(255, 255, 255, 0.10); }}
-    QListWidget#sidebar::item:selected {{ background: rgba(255, 255, 255, 0.20); color: {t['teal_text']};
+    QListWidget#sidebar::item:hover {{ background: {t['sidebar_hover']}; }}
+    QListWidget#sidebar::item:selected {{ background: {t['sidebar_sel']}; color: {t['sidebar_text']};
                                           font-weight: 600; }}
 
     /* ---- типографика ---- */
@@ -226,6 +322,12 @@ def _qss(t: dict) -> str:
     QListWidget#noteList::item:selected, QListWidget#folderList::item:selected {{
         background: {t['selection']}; color: {t['text']}; }}
     QListWidget#noteList::item:hover, QListWidget#folderList::item:hover {{ background: {t['surface2']}; }}
+    QListWidget#subtasks::item {{ min-height: 26px; padding: 2px 4px; border-radius: 6px; }}
+    QListWidget#subtasks::item:selected {{ background: {t['selection']}; color: {t['text']}; }}
+    QListWidget#subtasks::indicator {{ width: 16px; height: 16px; border: 2px solid {t['border_strong']};
+                                       border-radius: 5px; background: {t['surface']}; }}
+    QListWidget#subtasks::indicator:checked {{ background: {t['accent']}; border-color: {t['accent']};
+                                               image: url({t['_check']}); }}
     QHeaderView::section {{ background: {t['surface']}; color: {t['text2']}; border: none;
                             border-bottom: 1px solid {t['border']}; padding: 7px 8px; font-weight: 600; }}
 
@@ -269,8 +371,9 @@ def _arrow_file(color: str, name: str = "chevron-down") -> str:
 def apply_theme(app: QApplication) -> None:
     global FONT_FAMILY
     FONT_FAMILY = _pick_font()
-    theme.dark = _system_is_dark()
-    theme.t = dict(DARK if theme.dark else LIGHT)
+    mode = theme.custom.get("mode", "system")
+    theme.dark = _system_is_dark() if mode == "system" else mode == "dark"
+    theme.t = derive(DARK if theme.dark else LIGHT, theme.dark, theme.custom)
     try:
         theme.t["_arrow"] = _arrow_file(theme.t["text2"])
         theme.t["_check"] = _arrow_file(theme.t["accent_text"], "check")
@@ -307,8 +410,17 @@ class _DialogFixer(QObject):
 _fixer = _DialogFixer()
 
 
-def install(app: QApplication) -> None:
+def set_appearance(custom: dict | None) -> None:
+    """Сменить оформление на лету (из настроек)."""
+    theme.custom = dict(custom or {})
+    app = QApplication.instance()
+    if app is not None:
+        apply_theme(app)
+
+
+def install(app: QApplication, custom: dict | None = None) -> None:
     """Применяет тему и следит за переключением светлой/тёмной темы в системе."""
+    theme.custom = dict(custom or {})
     from PySide6.QtCore import QLocale
     QLocale.setDefault(QLocale(QLocale.Russian, QLocale.Russia))   # даты и дни недели по-русски
     app.installEventFilter(_fixer)

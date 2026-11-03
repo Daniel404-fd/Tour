@@ -62,7 +62,12 @@ def main() -> int:
     if translator.load(QLocale("ru_RU"), "qtbase", "_",
                        QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
         app.installTranslator(translator)
-    theme.install(app)
+    try:
+        from .backup import Settings
+        appearance = Settings(default_data_dir()).get("appearance")
+    except Exception:
+        appearance = None
+    theme.install(app, appearance)
     icon = resource_path("icon.png")
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))

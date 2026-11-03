@@ -206,6 +206,15 @@ def upcoming_tasks(tasks: Iterable[Task], today: date, days: int = 4) -> list[Ta
 # ---------- Цели ----------
 
 @dataclass
+class Subtask:
+    id: int
+    task_id: int
+    title: str
+    done: bool = False
+    position: int = 0
+
+
+@dataclass
 class GoalStep:
     id: int
     goal_id: int
