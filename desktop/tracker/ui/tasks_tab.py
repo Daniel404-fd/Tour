@@ -470,6 +470,22 @@ class TasksPage(w.Page):
         self.topic_group.setExclusive(True)
         self.topic_group.buttonClicked.connect(self._topic_changed)
 
+        # быстрое добавление одной строкой: «Купить молоко завтра #дом !»
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(8)
+        self.quick = QLineEdit()
+        self.quick.setObjectName("quickAdd")
+        self.quick.setPlaceholderText("Быстро добавить задачу: «Купить молоко завтра #дом !» — и Enter")
+        self.quick.setAccessibleName("Быстрое добавление задачи")
+        self.quick.setToolTip("Срок: сегодня, завтра, послезавтра, день недели («в пятницу», «пт») или дата «12.11».\n"
+                              "Тема: #название (можно начало). Высокий приоритет: «!».")
+        self.quick.textChanged.connect(self._quick_preview)
+        self.quick.returnPressed.connect(self._quick_add)
+        quick_row.addWidget(self.quick, 1)
+        self.quick_hint = w.label("", "caption")
+        quick_row.addWidget(self.quick_hint)
+        self.content.addLayout(quick_row)
+
         # действия с выделенной задачей — над таблицей, рядом с ней
         actions = QHBoxLayout()
         actions.setSpacing(6)
@@ -504,6 +520,18 @@ class TasksPage(w.Page):
         self.table.customContextMenuRequested.connect(self._context_menu)
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
+        # сортировка по щелчку на заголовок: по возрастанию → по убыванию → как обычно
+        header.setSectionsClickable(True)
+        header.sectionClicked.connect(self._header_clicked)
+        header.setToolTip("Щёлкните по заголовку, чтобы отсортировать; третий щелчок — обычный порядок")
+        self.sort_col, self.sort_desc = None, False
+        saved = db.get_pref("tasks_sort", "")
+        if saved:
+            try:
+                c, d = saved.split(":")
+                self.sort_col, self.sort_desc = int(c), d == "desc"
+            except ValueError:
+                pass
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for col in range(1, len(self.COLUMNS)):
@@ -671,6 +699,75 @@ class TasksPage(w.Page):
             self.done_btn.setText("Вернуть в работу" if task.done else "Выполнено")
             self.archive_action.setText("Вернуть из архива" if task.archived else "Отправить в архив")
 
+    # ---- быстрое добавление ----
+    def _quick_parse(self):
+        default = self.topic_filter if self.topic_filter > 0 else None
+        return logic.parse_quick_task(self.quick.text(), self.db.list_topics(), date.today(), default)
+
+    def _quick_preview(self) -> None:
+        if not self.quick.text().strip():
+            self.quick_hint.setText("")
+            return
+        q = self._quick_parse()
+        self.quick_hint.setText(" · ".join(q.hints) if q.hints else "Enter — добавить")
+
+    def _quick_add(self) -> None:
+        q = self._quick_parse()
+        if not q.title:
+            self.quick_hint.setText("Напишите, что нужно сделать")
+            return
+        tid = self.db.add_task(logic.Task(0, q.title, deadline=q.deadline, priority=q.priority, topic_id=q.topic_id))
+        self.quick.clear()
+        if self.status not in (logic.FILTER_ACTIVE, logic.FILTER_ALL):
+            self.status = logic.FILTER_ACTIVE
+            for b in self.status_group.buttons():
+                b.setChecked(b.property("value") == self.status)
+        if self.topic_filter not in (logic.TOPIC_ALL, q.topic_id if q.topic_id is not None else logic.TOPIC_NONE):
+            self.topic_filter = logic.TOPIC_ALL      # иначе новая задача не была бы видна
+        self.refresh()
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).data(Qt.UserRole) == tid:
+                self.table.selectRow(row)
+                self.table.scrollToItem(self.table.item(row, 0))
+        self.quick.setFocus()
+
+    # ---- сортировка ----
+    def _header_clicked(self, col: int) -> None:
+        if self.sort_col != col:
+            self.sort_col, self.sort_desc = col, False
+        elif not self.sort_desc:
+            self.sort_desc = True
+        else:
+            self.sort_col = None
+        self.db.set_pref("tasks_sort", "" if self.sort_col is None else
+                         f"{self.sort_col}:{'desc' if self.sort_desc else 'asc'}")
+        self.refresh()
+
+    def _sorted(self, tasks: list, topic_by_id: dict, subs: dict) -> list:
+        header = self.table.horizontalHeader()
+        if self.sort_col is None:
+            header.setSortIndicatorShown(False)
+            return tasks
+        header.setSortIndicatorShown(True)
+        header.setSortIndicator(self.sort_col, Qt.DescendingOrder if self.sort_desc else Qt.AscendingOrder)
+        col = self.sort_col
+
+        def steps(t):
+            st = subs.get(t.id)
+            return sum(1 for x in st if x.done) / len(st) if st else None
+
+        keyf = {
+            0: lambda t: t.title.casefold(),
+            1: steps,
+            2: lambda t: topic_by_id[t.topic_id].name.casefold() if t.topic_id in topic_by_id else None,
+            3: lambda t: t.deadline,
+            4: lambda t: -t.priority,          # «по возрастанию» — от низкого к высокому
+        }[col]
+        with_key = [t for t in tasks if keyf(t) is not None]
+        without = [t for t in tasks if keyf(t) is None]     # пустые значения всегда в конце
+        with_key.sort(key=keyf, reverse=self.sort_desc)     # сортировка устойчивая: внутри — обычный порядок
+        return with_key + without
+
     def _show_detail(self) -> None:
         task = self._selected()
         # карточка не прячется (чтобы таблица не «прыгала»), а показывает подсказку
@@ -795,8 +892,8 @@ class TasksPage(w.Page):
             sub += f" · {overdue} {logic.plural(overdue, 'просрочена', 'просрочены', 'просрочено')}"
         self.header.set_subtitle(sub)
 
-        tasks = logic.sort_tasks(logic.filter_by_topic(
-            logic.filter_tasks(all_tasks, self.status), self.topic_filter))
+        tasks = self._sorted(logic.sort_tasks(logic.filter_by_topic(
+            logic.filter_tasks(all_tasks, self.status), self.topic_filter)), topic_by_id, subs)
         self.count_label.setText(f"Показано: {len(tasks)}")
 
         danger, warn = theme.color("danger"), theme.color("warn")
@@ -859,7 +956,7 @@ class TasksPage(w.Page):
             self._show_detail()
         if not tasks:
             if self.status == logic.FILTER_ACTIVE and not all_tasks:
-                self.empty.setText("Задач пока нет. Нажмите «Новая задача» или Ctrl+N.")
+                self.empty.setText("Задач пока нет. Напишите задачу в строке выше и нажмите Enter — или «Новая задача» (Ctrl+N).")
             elif self.status == logic.FILTER_ACTIVE:
                 self.empty.setText("Здесь нет активных задач — всё сделано.")
             else:

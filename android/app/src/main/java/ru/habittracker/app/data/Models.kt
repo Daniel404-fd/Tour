@@ -179,3 +179,67 @@ object Logic {
         return if (d.year == today.year) s else "$s ${d.year}"
     }
 }
+
+// ---------------------------------------------------------------- быстрое добавление (как logic.parse_quick_task)
+
+data class QuickTask(val title: String, val deadline: LocalDate?, val topicId: Long?, val priority: Int, val hints: List<String>)
+
+object Quick {
+    private val WEEKDAYS = mapOf("пн" to 0, "понедельник" to 0, "вт" to 1, "вторник" to 1, "ср" to 2, "среда" to 2, "среду" to 2,
+        "чт" to 3, "четверг" to 3, "пт" to 4, "пятница" to 4, "пятницу" to 4, "сб" to 5, "суббота" to 5, "субботу" to 5,
+        "вс" to 6, "воскресенье" to 6)
+    private val REL = mapOf("сегодня" to 0L, "завтра" to 1L, "послезавтра" to 2L)
+    private val DATE = Regex("""(\d{1,2})\.(\d{1,2})(?:\.(\d{2}|\d{4}))?""")
+
+    private fun nextWeekday(today: LocalDate, wd: Int): LocalDate {
+        val delta = ((wd - (today.dayOfWeek.value - 1)) % 7 + 7) % 7
+        return today.plusDays(if (delta == 0) 7L else delta.toLong())
+    }
+
+    private fun parseDate(word: String, today: LocalDate): LocalDate? {
+        val m = DATE.matchEntire(word) ?: return null
+        val d = m.groupValues[1].toInt(); val mo = m.groupValues[2].toInt(); val y = m.groupValues[3]
+        val year = if (y.isEmpty()) today.year else if (y.length == 2) 2000 + y.toInt() else y.toInt()
+        fun mk(yy: Int) = try { LocalDate.of(yy, mo, d) } catch (e: java.time.DateTimeException) { null }
+        var res = mk(year) ?: return null
+        if (y.isEmpty() && res.isBefore(today)) res = mk(year + 1) ?: return null
+        return res
+    }
+
+    fun parse(text: String, topics: List<Topic>, today: LocalDate, defaultTopic: Long? = null): QuickTask {
+        val words = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val keep = mutableListOf<String>()
+        var deadline: LocalDate? = null
+        var topicId = defaultTopic
+        var priority = PRIORITY_MEDIUM
+        var i = 0
+        while (i < words.size) {
+            val raw = words[i]
+            val low = raw.lowercase().trim(',', '.')
+            val next = if (i + 1 < words.size) words[i + 1].lowercase().trim(',', '.') else ""
+            when {
+                raw == "!" || raw == "!!" || raw == "!!!" -> priority = PRIORITY_HIGH
+                low in REL && deadline == null -> deadline = today.plusDays(REL.getValue(low))
+                (low == "в" || low == "во") && next in WEEKDAYS && deadline == null -> { deadline = nextWeekday(today, WEEKDAYS.getValue(next)); i++ }
+                low in WEEKDAYS && deadline == null -> deadline = nextWeekday(today, WEEKDAYS.getValue(low))
+                raw.startsWith("#") && raw.length > 1 -> {
+                    val name = raw.substring(1).lowercase()
+                    val hit = topics.firstOrNull { it.name.lowercase().replace(" ", "") == name }
+                        ?: topics.firstOrNull { it.name.lowercase().startsWith(name) }
+                    if (hit != null) topicId = hit.id else keep += raw
+                }
+                deadline == null && parseDate(raw.trim(','), today) != null -> deadline = parseDate(raw.trim(','), today)
+                else -> keep += raw
+            }
+            i++
+        }
+        val hints = mutableListOf<String>()
+        deadline?.let { d ->
+            hints += "срок: ${Logic.WD[d.dayOfWeek.value - 1]}, ${d.dayOfMonth} ${Logic.MONTHS_GEN[d.monthValue - 1]}" +
+                (if (d.year != today.year) " ${d.year}" else "") + " (${Logic.dueText(d, today)})"
+        }
+        topicId?.let { id -> topics.firstOrNull { it.id == id }?.let { hints += "тема: ${it.name}" } }
+        if (priority == PRIORITY_HIGH) hints += "высокий приоритет"
+        return QuickTask(keep.joinToString(" ").trim(), deadline, topicId, priority, hints)
+    }
+}

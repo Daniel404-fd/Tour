@@ -25,6 +25,20 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import ru.habittracker.app.data.Quick
+import ru.habittracker.app.data.QuickTask
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.DropdownMenu
@@ -85,6 +99,8 @@ fun TasksScreen(nav: Nav) {
     fun pickTopic(v: Long) { topic = v; repo.setPref("tasks_topic", v.toString()) }
     var expanded by remember { mutableStateOf(setOf<Long>()) }
     val subs = useData { repo.allSubtasks() }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<Task?>(null) }
     var topicsDialog by remember { mutableStateOf(false) }
     val all = useData { repo.tasks() }
@@ -133,20 +149,40 @@ fun TasksScreen(nav: Nav) {
                     Chip("Без темы", topic == TOPIC_NONE) { pickTopic(TOPIC_NONE) }
                 }
                 Spacer(Modifier.height(8.dp))
+                QuickAdd(topics, if (topic > 0) topic else null) { q ->
+                    val id = repo.addTask(Task(title = q.title, deadline = q.deadline, priority = q.priority, topicId = q.topicId))
+                    if (status != "active" && status != "all") status = "active"
+                    if (topic != TOPIC_ALL && topic != (q.topicId ?: TOPIC_NONE)) pickTopic(TOPIC_ALL)
+                    scope.launch { snackbar.showSnackbar("Добавлено: ${q.title}", duration = SnackbarDuration.Short) }
+                    id
+                }
+                Spacer(Modifier.height(4.dp))
             }
             if (shown.isEmpty()) item {
                 Box(Modifier.padding(horizontal = 16.dp)) {
-                    EmptyText(if (all.isEmpty()) "Задач пока нет. Нажмите «+»." else if (status == "active") "Здесь нет активных задач — всё сделано." else "По выбранным фильтрам ничего нет.")
+                    EmptyText(if (all.isEmpty()) "Задач пока нет. Напишите задачу в строке выше или нажмите «+». Готовую задачу смахните вправо." else if (status == "active") "Здесь нет активных задач — всё сделано." else "По выбранным фильтрам ничего нет.")
                 }
             }
             items(shown, key = { it.id }) { task ->
+                SwipeToComplete(task, onToggle = {
+                    val nowDone = !task.done
+                    repo.updateTask(task.copy(done = nowDone, completedOn = null))
+                    scope.launch {
+                        snackbar.currentSnackbarData?.dismiss()
+                        val r = snackbar.showSnackbar(if (nowDone) "Выполнено: ${task.title}" else "Возвращено в работу: ${task.title}",
+                            actionLabel = "Отменить", duration = SnackbarDuration.Short)
+                        if (r == SnackbarResult.ActionPerformed) repo.task(task.id)?.let { repo.updateTask(it.copy(done = task.done, completedOn = task.completedOn)) }
+                    }
+                }) {
                 TaskRow(task, byId[task.topicId], today, subs[task.id] ?: emptyList(), task.id in expanded,
                     onToggleExpand = { expanded = if (task.id in expanded) expanded - task.id else expanded + task.id },
                     onOpen = { editing = task })
+                }
                 HorizontalDivider(color = t.border, modifier = Modifier.padding(start = 60.dp))
             }
             item { Spacer(Modifier.height(88.dp)) }
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 80.dp))
         FloatingActionButton(onClick = { editing = Task(title = "", topicId = if (topic > 0) topic else null) },
             containerColor = t.teal, contentColor = t.tealText, modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
             Icon(Icons.Filled.Add, "Новая задача")
@@ -154,6 +190,48 @@ fun TasksScreen(nav: Nav) {
     }
     editing?.let { TaskEditor(it, topics) { editing = null } }
     if (topicsDialog) TopicsDialog(topics) { topicsDialog = false }
+}
+
+/** Строка быстрого добавления: «Купить молоко завтра #дом !» — срок, тема и приоритет распознаются. */
+@Composable
+private fun QuickAdd(topics: List<Topic>, defaultTopic: Long?, onAdd: (QuickTask) -> Long) {
+    val t = tok
+    var text by remember { mutableStateOf("") }
+    val q = Quick.parse(text, topics, LocalDate.now(), defaultTopic)
+    fun submit() { if (q.title.isNotBlank()) { onAdd(q); text = "" } }
+    Column(Modifier.padding(horizontal = 16.dp)) {
+        OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+            placeholder = { Text("Быстро: «Купить молоко завтра #дом !»") },
+            trailingIcon = { if (q.title.isNotBlank()) IconButton(onClick = { submit() }) { Icon(Icons.Filled.Add, "Добавить задачу", tint = t.link) } },
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { submit() }))
+        if (text.isNotBlank()) Caption(if (q.hints.isEmpty()) "Срок: завтра, «в пятницу», 12.11 · тема: #название · «!» — важно"
+            else q.hints.joinToString(" · "), modifier = Modifier.padding(start = 4.dp, top = 2.dp))
+    }
+}
+
+/** Смахните задачу вправо — выполнено (или обратно в работу), с отменой в подсказке внизу. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeToComplete(task: Task, onToggle: () -> Unit, content: @Composable () -> Unit) {
+    val t = tok
+    val toggle by androidx.compose.runtime.rememberUpdatedState(onToggle)   // задача могла измениться с момента создания строки
+    val last = remember { longArrayOf(0L) }
+    val state = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
+        val now = System.currentTimeMillis()
+        if (v == SwipeToDismissBoxValue.StartToEnd && now - last[0] > 600) { last[0] = now; toggle() }
+        false     // строка возвращается на место — список сам обновится
+    }, positionalThreshold = { it * 0.35f })
+    SwipeToDismissBox(state, enableDismissFromEndToStart = false, backgroundContent = {
+        Row(Modifier.fillMaxSize().background(if (task.done) t.warnSoft else t.accent).padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Icon(if (task.done) Icons.AutoMirrored.Filled.Undo else Icons.Filled.Check, null,
+                tint = if (task.done) t.warn else t.accentText)
+            Spacer(Modifier.width(10.dp))
+            Text(if (task.done) "Вернуть в работу" else "Выполнено", color = if (task.done) t.warn else t.accentText,
+                fontWeight = FontWeight.SemiBold)
+        }
+    }) { content() }
 }
 
 /** Выпадающий фильтр тем: с количеством задач в каждой. */

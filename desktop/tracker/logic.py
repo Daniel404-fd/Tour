@@ -1,7 +1,7 @@
 """Чистая логика: стрики, статистика, сортировка задач. Без Qt и без БД."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Iterable
 
@@ -376,3 +376,103 @@ def due_text(deadline: date, today: date) -> str:
         return f"через {delta} {plural(delta, 'день', 'дня', 'дней')}"
     late = -delta
     return f"просрочено на {late} {plural(late, 'день', 'дня', 'дней')}"
+
+
+# ---------------------------------------------------------------- быстрое добавление задачи
+
+_WEEKDAYS = {
+    "пн": 0, "понедельник": 0, "вт": 1, "вторник": 1, "ср": 2, "среда": 2, "среду": 2,
+    "чт": 3, "четверг": 3, "пт": 4, "пятница": 4, "пятницу": 4, "сб": 5, "суббота": 5, "субботу": 5,
+    "вс": 6, "воскресенье": 6,
+}
+_WD_SHORT = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+_MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября",
+               "октября", "ноября", "декабря"]
+_REL = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
+
+
+@dataclass
+class QuickTask:
+    title: str
+    deadline: date | None = None
+    topic_id: int | None = None
+    priority: int = PRIORITY_MEDIUM
+    hints: list[str] = field(default_factory=list)   # что распознано — для подсказки под строкой
+
+
+def _parse_date(word: str, today: date) -> date | None:
+    import re
+    m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2}|\d{4}))?", word)
+    if not m:
+        return None
+    d, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+    year = (2000 + int(y) if len(y) == 2 else int(y)) if y else today.year
+    try:
+        res = date(year, mo, d)
+    except ValueError:
+        return None
+    if not y and res < today:          # «12.01» в ноябре — это следующий январь
+        try:
+            res = date(year + 1, mo, d)
+        except ValueError:
+            return None
+    return res
+
+
+def parse_quick_task(text: str, topics: Iterable[Topic], today: date,
+                     default_topic: int | None = None) -> QuickTask:
+    """«Купить молоко завтра #дом !» → задача со сроком, темой и высоким приоритетом.
+
+    Понимает: сегодня / завтра / послезавтра, день недели («в пятницу», «пт» — ближайший
+    следующий), дату «12.11» или «12.11.2026», «#тема» (по началу названия), «!» — высокий приоритет.
+    Распознанные слова из названия убираются; остальное остаётся как есть.
+    """
+    topics = list(topics)
+    words = text.split()
+    keep: list[str] = []
+    q = QuickTask("", topic_id=default_topic)
+    i = 0
+    while i < len(words):
+        raw = words[i]
+        low = raw.lower().strip(",.")
+        nxt = words[i + 1].lower().strip(",.") if i + 1 < len(words) else ""
+        if raw in ("!", "!!", "!!!"):
+            q.priority = PRIORITY_HIGH
+        elif low in _REL and q.deadline is None:
+            q.deadline = today + timedelta(days=_REL[low])
+        elif low in ("в", "во") and nxt in _WEEKDAYS and q.deadline is None:
+            q.deadline = _next_weekday(today, _WEEKDAYS[nxt])
+            i += 1
+        elif low in _WEEKDAYS and q.deadline is None:
+            q.deadline = _next_weekday(today, _WEEKDAYS[low])
+        elif raw.startswith("#") and len(raw) > 1:
+            name = raw[1:].lower()
+            exact = [t for t in topics if t.name.lower().replace(" ", "") == name]
+            starts = [t for t in topics if t.name.lower().startswith(name)]
+            hit = (exact or starts or [None])[0]
+            if hit is not None:
+                q.topic_id = hit.id
+            else:
+                keep.append(raw)
+        elif q.deadline is None and (d := _parse_date(raw.strip(","), today)) is not None:
+            q.deadline = d
+        else:
+            keep.append(raw)
+        i += 1
+    q.title = " ".join(keep).strip()
+    if q.deadline is not None:
+        d = q.deadline
+        q.hints.append(f"срок: {_WD_SHORT[d.weekday()]}, {d.day} {_MONTHS_GEN[d.month - 1]}"
+                       + (f" {d.year}" if d.year != today.year else "") + f" ({due_text(d, today)})")
+    if q.topic_id is not None:
+        t = next((t for t in topics if t.id == q.topic_id), None)
+        if t:
+            q.hints.append("тема: " + t.name)
+    if q.priority == PRIORITY_HIGH:
+        q.hints.append("высокий приоритет")
+    return q
+
+
+def _next_weekday(today: date, wd: int) -> date:
+    delta = (wd - today.weekday()) % 7
+    return today + timedelta(days=delta or 7)

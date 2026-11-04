@@ -515,7 +515,7 @@ fun SettingsScreen(nav: Nav) {
         AppearanceCard()
         Card("Где хранятся данные") {
             Secondary("Все данные лежат только на телефоне, в личной папке приложения. Если включена синхронизация — ещё и на вашем Яндекс Диске, в папке «HabitTracker-sync».")
-            Caption("Трекер для Android, версия 1.1.0")
+            Caption("Трекер для Android, версия 1.2.0")
         }
         Spacer(Modifier.height(24.dp))
     }
