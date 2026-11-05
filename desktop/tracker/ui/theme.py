@@ -390,6 +390,11 @@ def _qss(t: dict) -> str:
     QMenu::item {{ padding: 6px 22px; border-radius: 5px; }}
     QMenu::item:selected {{ background: {t['hover']}; color: {t['text']}; }}
     QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
+    QFrame#attTile {{ background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 8px; }}
+    QFrame#attTile:hover {{ border-color: {t['teal']}; }}
+    QLabel#attName {{ color: {t['text2']}; background: transparent; }}
+    QDialog#viewer {{ background: {t['surface']}; }}
+    QGraphicsView#imageView {{ background: {t['surface2']}; border-radius: 8px; }}
     QFrame#toast {{ background: {t['tip']}; border-radius: 10px; }}
     QLabel#toastText {{ color: {t['tip_text']}; background: transparent; }}
     QPushButton#toastBtn {{ background: transparent; border: none; color: {t['tip_text']}; font-weight: 700;

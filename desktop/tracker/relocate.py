@@ -18,7 +18,7 @@ from .storage import ENCRYPTED_NAME, PLAIN_NAME
 APP_DIR_NAME = "HabitTracker"
 LOCATION_NAME = "location.json"
 MOVED_FILES = [PLAIN_NAME, ENCRYPTED_NAME, SETTINGS_NAME, "sidebar.png"]
-MOVED_DIRS = ["backups"]
+MOVED_DIRS = ["backups", "attachments"]
 
 
 def home_dir() -> Path:

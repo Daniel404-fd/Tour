@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import logic
-from .logic import Board, BoardColumn, Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
+from .logic import Attachment, Board, BoardColumn, Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
 from .cal import EVENT_COLORS, CalendarInfo, Event
 from . import sync
 from .storage import PlainStore
@@ -52,6 +52,15 @@ CREATE TABLE IF NOT EXISTS board_columns (
     name     TEXT    NOT NULL,
     position INTEGER NOT NULL DEFAULT 0,
     is_done  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS note_attachments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    file       TEXT    NOT NULL,
+    size       INTEGER NOT NULL DEFAULT 0,
+    mime       TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topics (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -767,6 +776,30 @@ class Database:
         r = self.conn.execute(f"SELECT {self._NOTE_COLS} FROM notes WHERE id = ?",
                               (note_id,)).fetchone()
         return Note(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7]) if r else None
+
+    # вложения заметок (сами файлы — в tracker/attachments.py)
+    def add_attachment(self, note_id: int, name: str, file: str, size: int, mime: str) -> int:
+        cur = self.conn.execute("INSERT INTO note_attachments(note_id, name, file, size, mime, created_at)"
+                                " VALUES (?, ?, ?, ?, ?, ?)", (note_id, name, file, size, mime, _now()))
+        self.conn.execute("UPDATE notes SET updated_at = ? WHERE id = ?", (_now(), note_id))
+        self._commit()
+        return cur.lastrowid
+
+    def list_attachments(self, note_id: int | None = None) -> list[Attachment]:
+        sql = "SELECT id, note_id, name, file, size, mime, created_at FROM note_attachments"
+        rows = self.conn.execute(sql + (" WHERE note_id = ? ORDER BY id" if note_id is not None else ""),
+                                 (note_id,) if note_id is not None else ())
+        return [Attachment(*r) for r in rows]
+
+    def get_attachment(self, att_id: int) -> Attachment | None:
+        return next((a for a in self.list_attachments() if a.id == att_id), None)
+
+    def delete_attachment(self, att_id: int) -> None:
+        self.conn.execute("DELETE FROM note_attachments WHERE id = ?", (att_id,))
+        self._commit()
+
+    def attachment_counts(self) -> dict[int, int]:
+        return {r[0]: r[1] for r in self.conn.execute("SELECT note_id, COUNT(*) FROM note_attachments GROUP BY note_id")}
 
     # папки заметок
     def add_folder(self, name: str) -> int:

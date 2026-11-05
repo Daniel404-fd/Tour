@@ -33,7 +33,7 @@ def when_text(iso: str) -> str:
 
 
 class NoteListRow(QWidget):
-    def __init__(self, note: logic.Note):
+    def __init__(self, note: logic.Note, attachments: int = 0):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
@@ -46,6 +46,10 @@ class NoteListRow(QWidget):
         title.setText(QFontMetrics(f).elidedText(note.display_title, Qt.ElideRight,
                                                  230 if note.pinned else 250))
         top.addWidget(title, 1)
+        if attachments:
+            clip = w.label(f"📎 {attachments}", "caption")
+            clip.setToolTip("Вложения")
+            top.addWidget(clip)
         if note.pinned:
             pin = w.label()
             pin.setPixmap(icons.pixmap("pin", theme["accent"], 14))
@@ -209,6 +213,11 @@ class NotesPage(w.Page):
         self.text.setPlaceholderText("Текст заметки… Сохраняется автоматически.")
         self.text.textChanged.connect(self._changed)
         self.editor.body.addWidget(self.text, 1)
+        from .attachments_ui import AttachmentStrip, DropAndPaste
+        self.attachments = AttachmentStrip(db)
+        self.attachments.changed.connect(self._attachments_changed)
+        self.editor.body.addWidget(self.attachments)
+        self._dnd = DropAndPaste(self.attachments, [self.editor, self.text], self.text)
         self.editor.body.addWidget(self.meta)
         right = QWidget()
         rl = QVBoxLayout(right)
@@ -247,7 +256,7 @@ class NotesPage(w.Page):
         note = self.db.get_note(self.current_id)
         item = self._item_for(self.current_id)
         if note and item:
-            self.list.setItemWidget(item, NoteListRow(note))
+            self.list.setItemWidget(item, NoteListRow(note, self.db.attachment_counts().get(note.id, 0)))
 
     def _item_for(self, note_id: int) -> QListWidgetItem | None:
         for i in range(self.list.count()):
@@ -323,9 +332,16 @@ class NotesPage(w.Page):
             for f in self.db.list_folders():
                 self.folder_combo.addItem(icons.icon("folder", theme["text2"], size=16), f.name, f.id)
             self.folder_combo.setCurrentIndex(max(0, self.folder_combo.findData(note.folder_id)))
+        self.attachments.set_note(note.id if note else None)
         self._loading = False
 
     # ---- папки ----
+
+    def _attachments_changed(self) -> None:
+        note = self.db.get_note(self.current_id) if self.current_id else None
+        item = self._item_for(self.current_id) if note else None
+        if note and item:
+            self.list.setItemWidget(item, NoteListRow(note, self.db.attachment_counts().get(note.id, 0)))
 
     def _reload_folders(self) -> None:
         all_notes = self.db.list_notes()
@@ -441,6 +457,7 @@ class NotesPage(w.Page):
     def _reload_list(self) -> None:
         notes = logic.filter_by_folder(self.db.list_notes(), self.folder)
         notes = logic.sort_notes(logic.search_notes(notes, self.search.text()))
+        counts = self.db.attachment_counts()
         self._loading = True
         self.list.clear()
         for n in notes:
@@ -449,7 +466,7 @@ class NotesPage(w.Page):
             it.setSizeHint(QSize(260, 56))
             it.setToolTip(n.display_title)
             self.list.addItem(it)
-            self.list.setItemWidget(it, NoteListRow(n))
+            self.list.setItemWidget(it, NoteListRow(n, counts.get(n.id, 0)))
         self._loading = False
         ids = [n.id for n in notes]
         if self.current_id not in ids:

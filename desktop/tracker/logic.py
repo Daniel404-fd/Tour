@@ -344,6 +344,17 @@ FOLDER_NONE = 0     # «Без папки»
 
 
 @dataclass
+class Attachment:
+    id: int
+    note_id: int
+    name: str
+    file: str          # имя файла в папке attachments
+    size: int = 0
+    mime: str = ""
+    created_at: str = ""
+
+
+@dataclass
 class Note:
     id: int
     title: str = ""

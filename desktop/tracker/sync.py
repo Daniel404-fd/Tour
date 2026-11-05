@@ -48,6 +48,7 @@ TABLES: dict[str, tuple[list[str], dict[str, str]]] = {
     "board_columns": (["board_id", "name", "position", "is_done"], {"board_id": "boards"}),
     "notes": (["title", "body", "pinned", "created_at", "updated_at", "folder_id", "board_id"],
               {"folder_id": "note_folders", "board_id": "boards"}),
+    "note_attachments": (["note_id", "name", "file", "size", "mime", "created_at"], {"note_id": "notes"}),
     "tasks": (["title", "description", "deadline", "priority", "done", "completed_on", "archived",
                "topic_id", "board_id", "column_id", "position", "repeat", "labels", "goal_id", "note_id"],
               {"topic_id": "topics", "board_id": "boards", "column_id": "board_columns", "goal_id": "goals",
@@ -60,7 +61,8 @@ TABLES: dict[str, tuple[list[str], dict[str, str]]] = {
 # Без какой ссылки запись не имеет смысла (иначе ссылка просто обнуляется).
 REQUIRED_REFS = {("habit_marks", "habit_id"), ("goal_steps", "goal_id"),
                  ("goal_contributions", "goal_id"), ("events", "calendar_id"),
-                 ("task_subtasks", "task_id"), ("board_columns", "board_id")}
+                 ("task_subtasks", "task_id"), ("board_columns", "board_id"),
+                 ("note_attachments", "note_id")}
 
 
 def now_ts() -> str:

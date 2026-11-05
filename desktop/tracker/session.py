@@ -155,12 +155,23 @@ class Session:
 
     def sync_apply(self, payloads: list[dict], cache: dict):
         stats = self.db.sync_merge(payloads)
+        from . import attachments
+        if stats.changed:
+            attachments.cleanup(self.db)
+        # какие файлы вложений нужны — считаем здесь (база — только в основном потоке)
+        self._files_wanted = {a.file for a in self.db.list_attachments()}
+        self._files_dir = attachments.folder(self.db)
         blob = self.db.sync_export(self.sync_settings.get("device_name") or "ПК")
         return stats, blob, cache
 
     def sync_upload(self, blob: bytes, cache: dict, device_id: str | None = None) -> None:
         from .webdav import device_file
-        self.dav().put(device_file(device_id or self.db.device_id()), blob)
+        dav = self.dav()
+        dav.put(device_file(device_id or self.db.device_id()), blob)
+        wanted = getattr(self, "_files_wanted", None)
+        if wanted:
+            from .attachments import sync_files
+            self.files_synced = sync_files(dav, self._files_dir, wanted)
         self.settings.set("sync_cache", cache)
         from .sync import now_ts
         self.settings.set("last_sync", now_ts())

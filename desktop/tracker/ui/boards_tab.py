@@ -425,6 +425,10 @@ class BoardNotes(QFrame):
         self.body.textChanged.connect(self._changed)
         lay.addWidget(self.title)
         lay.addWidget(self.body, 1)
+        from .attachments_ui import AttachmentStrip, DropAndPaste
+        self.attachments = AttachmentStrip(self.db)
+        lay.addWidget(self.attachments)
+        self._dnd = DropAndPaste(self.attachments, [self.body], self.body)
         # пустое состояние — сверху, под заголовком (а не посередине панели)
         self.empty_box = QWidget()
         el = QVBoxLayout(self.empty_box)
@@ -461,8 +465,9 @@ class BoardNotes(QFrame):
         self.title.setText(note.title if note else "")
         self.body.setPlainText(note.body if note else "")
         self._loading = False
-        for x in (self.title, self.body):
+        for x in (self.title, self.body, self.attachments):
             x.setVisible(note is not None)
+        self.attachments.set_note(note.id if note else None)
         self.list.setVisible(self.list.count() > 0)
         self.empty_box.setVisible(note is None and self.list.count() == 0)
         self.list.setFixedHeight(min(170, self.list.count() * 34 + 10))
