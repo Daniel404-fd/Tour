@@ -75,10 +75,10 @@ class Repo(val helper: Db) {
     }
 
     /** Обычные задачи. Карточки досок — tasks(includeBoards = true) или boardTasks(). */
-    fun tasks(includeBoards: Boolean = false): List<Task> = query("SELECT id, title, description, deadline, priority, done, completed_on, archived, topic_id, board_id, column_id, position FROM tasks" +
+    fun tasks(includeBoards: Boolean = false): List<Task> = query("SELECT id, title, description, deadline, priority, done, completed_on, archived, topic_id, board_id, column_id, position, repeat, labels, goal_id, note_id FROM tasks" +
         if (includeBoards) "" else " WHERE board_id IS NULL") {
         Task(it.getLong(0), it.getString(1), it.getString(2), d(it.str(3)), it.getInt(4), it.bool(5), d(it.str(6)), it.bool(7), it.lng(8),
-            it.lng(9), it.lng(10), if (it.isNull(11)) 0.0 else it.getDouble(11))
+            it.lng(9), it.lng(10), if (it.isNull(11)) 0.0 else it.getDouble(11), it.str(12)?.ifEmpty { null }, it.str(13) ?: "", it.lng(14), it.lng(15))
     }
     fun task(id: Long) = tasks(includeBoards = true).firstOrNull { it.id == id }
     fun boardTasks(boardId: Long) = tasks(includeBoards = true).filter { it.boardId == boardId }
@@ -88,10 +88,39 @@ class Repo(val helper: Db) {
         return cv("title" to t.title, "description" to t.description, "deadline" to t.deadline,
             "priority" to t.priority, "done" to t.done, "completed_on" to completed,
             "archived" to t.archived, "topic_id" to t.topicId, "board_id" to t.boardId, "column_id" to t.columnId,
-            "position" to if (t.boardId != null) t.position else null)
+            "position" to if (t.boardId != null) t.position else null, "repeat" to t.repeat?.ifEmpty { null },
+            "labels" to Logic.parseLabels(t.labels).joinToString(","), "goal_id" to t.goalId, "note_id" to t.noteId)
     }
     fun addTask(t: Task) = insert("tasks", taskValues(t))
-    fun updateTask(t: Task) { db.update("tasks", taskValues(t), "id = ?", arrayOf(t.id.toString())); changed() }
+    fun updateTask(t: Task) {
+        val before = if (t.done && t.repeat != null) task(t.id) else null
+        db.update("tasks", taskValues(t), "id = ?", arrayOf(t.id.toString()))
+        if (before != null) repeatIfNeeded(before, t)
+        changed()
+    }
+
+    /** Повторяющаяся задача выполнена — она остаётся в истории, рядом появляется следующая (как на ПК). */
+    private fun repeatIfNeeded(before: Task, after: Task) {
+        val rule = after.repeat ?: return
+        if (!after.done || before.done) return
+        db.execSQL("UPDATE tasks SET repeat = NULL WHERE id = ?", arrayOf(after.id))
+        var column = after.columnId
+        var position = after.position
+        if (after.boardId != null) {
+            columns(after.boardId).firstOrNull { !it.isDone }?.let { first ->
+                column = first.id
+                position = (cardsIn(first.id).minOfOrNull { it.position } ?: 1.0) - 1.0
+            }
+        }
+        val next = after.copy(id = 0, deadline = Logic.nextDue(rule, after.deadline, LocalDate.now()), done = false, completedOn = null,
+            archived = false, columnId = column, position = position)
+        val nid = db.insertOrThrow("tasks", null, taskValues(next))
+        for (st in subtasks(after.id)) db.insertOrThrow("task_subtasks", null, cv("task_id" to nid, "title" to st.title, "position" to st.position))
+    }
+
+    fun goalTaskFlags(): Map<Long, List<Boolean>> =
+        query("SELECT goal_id, done FROM tasks WHERE goal_id IS NOT NULL AND archived = 0") { it.getLong(0) to it.bool(1) }
+            .groupBy({ it.first }, { it.second })
     fun deleteTask(id: Long) = exec("DELETE FROM tasks WHERE id = ?", id)
 
     // ---------------------------------------------------------------- доски (канбан), как на ПК
@@ -159,7 +188,7 @@ class Repo(val helper: Db) {
         }
         val t = task(taskId) ?: return
         val done = columnDone(columnId)
-        updateTask(t.copy(columnId = columnId, position = pos, done = done, completedOn = if (done) t.completedOn ?: LocalDate.now() else null))
+        updateTask(t.copy(columnId = columnId, position = pos, done = done, completedOn = if (done) t.completedOn ?: LocalDate.now() else null))   // повтор — внутри updateTask
     }
 
     /** Выполнено: карточка доски переезжает в «Готово» (или обратно в первую колонку). */
@@ -260,6 +289,20 @@ class Repo(val helper: Db) {
     fun setNotePinned(id: Long, pinned: Boolean) = exec("UPDATE notes SET pinned = ? WHERE id = ?", pinned, id)
     fun moveNote(id: Long, folderId: Long?) = exec("UPDATE notes SET folder_id = ? WHERE id = ?", folderId, id)
     fun deleteNote(id: Long) = exec("DELETE FROM notes WHERE id = ?", id)
+
+    // ---------------------------------------------------------------- вложения заметок (файлы — Attachments.kt)
+    fun attachments(noteId: Long? = null): List<Attachment> =
+        query("SELECT id, note_id, name, file, size, mime, created_at FROM note_attachments" + (if (noteId != null) " WHERE note_id = ? ORDER BY id" else ""),
+            noteId?.let { arrayOf(it.toString()) }) {
+            Attachment(it.getLong(0), it.getLong(1), it.getString(2), it.getString(3), it.getLong(4), it.getString(5), it.getString(6))
+        }
+    fun addAttachment(noteId: Long, name: String, file: String, size: Long, mime: String): Long {
+        val id = insert("note_attachments", cv("note_id" to noteId, "name" to name, "file" to file, "size" to size, "mime" to mime, "created_at" to nowIso()))
+        exec("UPDATE notes SET updated_at = ? WHERE id = ?", nowIso(), noteId)
+        return id
+    }
+    fun deleteAttachment(id: Long) = exec("DELETE FROM note_attachments WHERE id = ?", id)
+    fun attachmentCounts(): Map<Long, Int> = query("SELECT note_id, COUNT(*) FROM note_attachments GROUP BY note_id") { it.getLong(0) to it.getInt(1) }.toMap()
 
     fun folders(): List<NoteFolder> = query("SELECT id, name FROM note_folders") { NoteFolder(it.getLong(0), it.getString(1)) }.sortedBy { it.name.lowercase() }
     fun addFolder(name: String) = insert("note_folders", cv("name" to name))

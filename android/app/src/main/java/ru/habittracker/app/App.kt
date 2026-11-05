@@ -116,6 +116,15 @@ class SyncManager(private val app: App) {
                 val stats = Sync.mergeAll(app.repo.db, payloads, device)
                 val blob = Sync.encode(Sync.export(app.repo.db, device, deviceName))
                 dav.put(WebDav.deviceFile(device), blob)
+                // вложения заметок: свои новые — на Диск, недостающие — к себе
+                if (stats.changed) ru.habittracker.app.data.Attachments.cleanup(app, app.repo)
+                val wanted = app.repo.attachments().map { it.file }.toSet()
+                if (wanted.isNotEmpty()) {
+                    val files = WebDav(prefs.getString("url", null) ?: WebDav.YANDEX_URL, login, prefs.getString("password", "") ?: "",
+                        WebDav.FOLDER + "/files")
+                    val (_, down) = ru.habittracker.app.data.Attachments.syncFiles(files, ru.habittracker.app.data.Attachments.folder(app), wanted)
+                    if (down > 0) withContext(Dispatchers.Main) { app.version++ }
+                }
                 prefs.edit().putString("cache", JSONObject(newCache as Map<*, *>).toString())
                     .putString("last_sync", Sync.nowTs()).apply()
                 stats

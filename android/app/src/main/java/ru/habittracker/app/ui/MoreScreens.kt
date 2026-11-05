@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material3.AlertDialog
@@ -70,6 +71,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -92,6 +94,7 @@ fun MoreScreen(nav: Nav) {
         "goals" -> GoalsScreen(nav)
         "notes" -> NotesScreen(nav)
         "settings" -> SettingsScreen(nav)
+        "search" -> SearchScreen(nav)
         else -> MoreMenu(nav)
     }
 }
@@ -101,7 +104,7 @@ private fun MoreMenu(nav: Nav) {
     val t = tok
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Ещё", style = Header, color = t.text)
-        listOf(Triple("goals", "Цели", Icons.Outlined.Flag), Triple("notes", "Заметки", Icons.AutoMirrored.Outlined.Notes),
+        listOf(Triple("search", "Поиск по всему", Icons.Outlined.Search), Triple("goals", "Цели", Icons.Outlined.Flag), Triple("notes", "Заметки", Icons.AutoMirrored.Outlined.Notes),
             Triple("settings", "Настройки и синхронизация", Icons.Outlined.Settings)).forEach { (k, n, i) ->
             Card(modifier = Modifier.clickable { nav.more = k }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -131,6 +134,7 @@ fun GoalsScreen(nav: Nav) {
     val goals = useData { repo.goals() }
     val steps = useData { repo.allSteps() }
     val saved = useData { repo.savedAmounts() }
+    val flags = useData { repo.goalTaskFlags() }
     var filter by remember { mutableStateOf("active") }
     var editing by remember { mutableStateOf<Goal?>(null) }
     val today = LocalDate.now()
@@ -152,7 +156,7 @@ fun GoalsScreen(nav: Nav) {
             items(shown, key = { it.id }) { g ->
                 val s = saved[g.id] ?: 0.0
                 val st = steps[g.id] ?: emptyList()
-                val p = Logic.goalProgress(g, st, s)
+                val p = Logic.goalProgress(g, st, s, flags[g.id] ?: emptyList())
                 Card(modifier = Modifier.clickable { nav.goalId = g.id }) {
                     Text(g.title, fontWeight = FontWeight.SemiBold, color = t.text)
                     BlocksProgress(p)
@@ -188,7 +192,8 @@ private fun GoalDetail(g: Goal, steps: List<GoalStep>, saved: Double, onBack: ()
     var delete by remember { mutableStateOf(false) }
     var money by remember { mutableStateOf<Boolean?>(null) }   // true — снять, false — пополнить
     val history = useData { repo.contributions(g.id) }
-    val p = Logic.goalProgress(g, steps, saved)
+    val linked = useData { repo.tasks(includeBoards = true).filter { it.goalId == g.id && !it.archived } }
+    val p = Logic.goalProgress(g, steps, saved, linked.map { it.done })
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp).imePadding(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item {
             BackTitle(g.title, onBack) {
@@ -265,6 +270,29 @@ private fun GoalDetail(g: Goal, steps: List<GoalStep>, saved: Double, onBack: ()
                 if (!g.archived && !g.done) Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(newStep, { newStep = it }, label = { Text("Новый шаг") }, singleLine = true, modifier = Modifier.weight(1f))
                     TextButton(enabled = newStep.isNotBlank(), onClick = { repo.addStep(g.id, newStep.trim()); newStep = "" }) { Text("Добавить") }
+                }
+            }
+        }
+        item {
+            var newTask by remember { mutableStateOf("") }
+            Card("Задачи к цели" + if (linked.isNotEmpty()) " · ${linked.count { it.done }} из ${linked.size}" else "") {
+                if (linked.isEmpty()) Secondary("Привяжите задачу или карточку к цели (поле «Шаг к цели» в задаче) — выполненные засчитываются в прогресс.")
+                linked.sortedWith(compareBy({ it.done }, { it.deadline ?: LocalDate.MAX })).forEach { lt ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(lt.done, { repo.completeTask(lt.id, it) }, colors = CheckboxDefaults.colors(checkedColor = t.accent, checkmarkColor = t.accentText))
+                        Text(lt.title, Modifier.weight(1f), color = if (lt.done) t.text2 else t.text,
+                            textDecoration = if (lt.done) TextDecoration.LineThrough else null)
+                        lt.deadline?.takeIf { !lt.done }?.let { Caption(Logic.dueText(it, today)) }
+                    }
+                }
+                if (!g.archived && !g.done) Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(newTask, { newTask = it }, label = { Text("Новая задача к цели") }, singleLine = true, modifier = Modifier.weight(1f))
+                    TextButton(enabled = newTask.isNotBlank(), onClick = {
+                        val q = ru.habittracker.app.data.Quick.parse(newTask, repo.topics(), today)
+                        if (q.title.isNotBlank()) repo.addTask(ru.habittracker.app.data.Task(title = q.title, deadline = q.deadline, priority = q.priority,
+                            topicId = q.topicId, repeat = q.repeat, labels = q.labels.joinToString(", "), goalId = g.id))
+                        newTask = ""
+                    }) { Text("Добавить") }
                 }
             }
         }
@@ -357,6 +385,7 @@ private const val FOLDER_NONE = 0L
 fun NotesScreen(nav: Nav) {
     val repo = App.instance.repo
     val notes = useData { repo.notes() }
+    val counts = useData { repo.attachmentCounts() }
     val folders = useData { repo.folders() }
     var folder by remember { mutableStateOf(repo.pref("notes_folder", "-1")!!.toLongOrNull() ?: FOLDER_ALL) }
     var query by remember { mutableStateOf("") }
@@ -404,6 +433,7 @@ fun NotesScreen(nav: Nav) {
                 Column(Modifier.fillMaxWidth().clickable { nav.noteId = n.id }.padding(horizontal = 16.dp, vertical = 10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(n.displayTitle, fontWeight = FontWeight.SemiBold, color = t.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        counts[n.id]?.let { Caption("📎 $it  ") }
                         if (n.pinned) Icon(Icons.Outlined.PushPin, "Закреплена", tint = t.accent)
                     }
                     val lines = n.body.lines().filter { it.isNotBlank() }.let { if (n.title.isBlank()) it.drop(1) else it }
@@ -443,7 +473,7 @@ internal fun NoteEditor(id: Long, folders: List<ru.habittracker.app.data.NoteFol
         onDispose {
             val cur = repo.note(id)
             if (!deleted && cur != null && (cur.title != title.trim() || cur.body != body)) repo.updateNote(id, title.trim(), body)
-            if (!deleted && cur != null && title.isBlank() && body.isBlank()) repo.deleteNote(id)   // пустую не храним
+            if (!deleted && cur != null && title.isBlank() && body.isBlank() && repo.attachments(id).isEmpty()) repo.deleteNote(id)   // пустую не храним
         }
     }
     val fieldColors = TextFieldDefaults.colors(focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
@@ -467,6 +497,7 @@ internal fun NoteEditor(id: Long, folders: List<ru.habittracker.app.data.NoteFol
             textStyle = TextStyle(fontFamily = fontFamilyFor(Appearance.font), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = t.text), modifier = Modifier.fillMaxWidth())
         TextField(body, { body = it }, placeholder = { Text("Текст заметки… Сохраняется автоматически.") }, colors = fieldColors,
             textStyle = TextStyle(fontFamily = fontFamilyFor(Appearance.font), fontSize = 17.sp, color = t.text), modifier = Modifier.fillMaxWidth().weight(1f))
+        AttachmentsRow(id)
     }
     if (delete) ConfirmDialog("Удалить заметку", "Удалить заметку «${note.displayTitle}»? Это нельзя отменить.", "Удалить",
         { deleted = true; repo.deleteNote(id); onBack() }, { delete = false })
@@ -516,7 +547,7 @@ fun SettingsScreen(nav: Nav) {
         AppearanceCard()
         Card("Где хранятся данные") {
             Secondary("Все данные лежат только на телефоне, в личной папке приложения. Если включена синхронизация — ещё и на вашем Яндекс Диске, в папке «HabitTracker-sync».")
-            Caption("Трекер для Android, версия 1.3.1")
+            Caption("Трекер для Android, версия 1.4.0")
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -574,6 +605,72 @@ private fun Swatches(presets: List<Pair<String, String>>, current: String, what:
                 .clickable(onClickLabel = "$what: $name") { onPick(c) },
                 contentAlignment = Alignment.Center) {
                 if (sel) Icon(androidx.compose.material.icons.Icons.Filled.Check, "$what: $name, выбран", tint = Color.White)
+            }
+        }
+    }
+}
+
+
+// ======================================================================== поиск
+
+/** Поиск по всему: задачи и карточки досок, заметки (и их вложения по имени), цели, события. */
+@Composable
+fun SearchScreen(nav: Nav) {
+    val repo = App.instance.repo
+    val t = tok
+    var q by remember { mutableStateOf("") }
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    val today = LocalDate.now()
+    data class Hit(val score: Int, val group: String, val title: String, val caption: String, val go: () -> Unit)
+    fun score(text: String, vararg more: String): Int {
+        val ql = q.trim().lowercase()
+        var best = 0
+        (listOf(text) + more).forEachIndexed { i, s ->
+            val sl = s.lowercase()
+            best = maxOf(best, when { sl.startsWith(ql) -> 30 - i * 5; sl.split(" ").any { it.startsWith(ql) } -> 20 - i * 5; ql in sl -> 10 - i * 3; else -> 0 })
+        }
+        return best
+    }
+    val hits = useData { Unit }.let {
+        if (q.trim().length < 2) emptyList() else buildList {
+            val boards = repo.boards(true).associateBy { it.id }
+            repo.tasks(includeBoards = true).forEach { tk ->
+                val sc = score(tk.title, tk.description, tk.labels)
+                if (sc > 0) add(Hit(sc - if (tk.done) 5 else 0, "Задачи и карточки", tk.title,
+                    (boards[tk.boardId]?.name ?: "Задачи") + (tk.deadline?.takeIf { !tk.done }?.let { " · " + Logic.dueText(it, today) } ?: "") + if (tk.done) " · выполнена" else "") {
+                    if (tk.boardId != null) { nav.boardId = tk.boardId; nav.cardId = tk.id; nav.go("boards") } else { nav.taskId = tk.id; nav.go("tasks") }
+                })
+            }
+            val attNames = repo.attachments().groupBy { it.noteId }
+            (repo.notes() + boards.keys.flatMap { repo.boardNotes(it) }).forEach { n ->
+                val sc = score(n.displayTitle, n.body, attNames[n.id]?.joinToString(" ") { it.name } ?: "")
+                if (sc > 0) add(Hit(sc, "Заметки", n.displayTitle, n.boardId?.let { "Заметка доски «${boards[it]?.name}»" } ?: "Заметка") {
+                    if (n.boardId != null) { nav.boardId = n.boardId; nav.go("boards") } else { nav.noteId = n.id; nav.go("notes") }
+                })
+            }
+            repo.goals().forEach { g -> score(g.title, g.description).takeIf { it > 0 }?.let { add(Hit(it, "Цели", g.title, "Цель") { nav.goalId = g.id; nav.go("goals") }) } }
+            repo.events().forEach { e -> score(e.title, e.location).takeIf { it > 0 }?.let {
+                add(Hit(it, "События", e.title.ifEmpty { "(без названия)" }, "${e.start.toLocalDate()}") { nav.calendarDay = e.start.toLocalDate(); nav.go("calendar") })
+            } }
+        }.sortedByDescending { it.score }
+    }
+    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+        BackTitle("Поиск", { nav.more = null })
+        OutlinedTextField(q, { q = it }, placeholder = { Text("Задача, карточка, заметка, цель, событие…") }, singleLine = true,
+            modifier = Modifier.fillMaxWidth().focusRequester(focus))
+        Spacer(Modifier.height(8.dp))
+        LazyColumn(Modifier.fillMaxSize()) {
+            if (q.trim().length >= 2 && hits.isEmpty()) item { EmptyText("Ничего не найдено.") }
+            hits.groupBy { it.group }.forEach { (group, list) ->
+                item { Caption(group.uppercase() + " · ${list.size}", modifier = Modifier.padding(top = 12.dp, bottom = 4.dp)) }
+                items(list.take(30)) { h ->
+                    Column(Modifier.fillMaxWidth().clickable(onClick = h.go).padding(vertical = 10.dp)) {
+                        Text(h.title, color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Caption(h.caption, maxLines = 1)
+                    }
+                    HorizontalDivider(color = t.border)
+                }
             }
         }
     }

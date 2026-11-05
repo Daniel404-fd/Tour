@@ -217,6 +217,8 @@ private fun ColumnPane(board: Board, col: BoardColumn, columns: List<BoardColumn
                             when { card.done -> t.text3; d.isBefore(today) -> t.danger; d == today -> t.warn; else -> t.text2 }) }
                         subs[card.id]?.let { st -> add("☑ ${st.count { it.done }}/${st.size}" to t.text2) }
                         topics[card.topicId]?.let { add(it.name to t.text2) }
+                        if (card.repeat != null) add("↻" to t.text2)
+                        card.labelList.forEach { add("#$it" to hex(Logic.labelColor(it))) }
                     }
                     if (meta.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         meta.forEach { (s, c) -> Text(s, fontSize = 13.sp, color = c, maxLines = 1, overflow = TextOverflow.Ellipsis) }
@@ -226,7 +228,11 @@ private fun ColumnPane(board: Board, col: BoardColumn, columns: List<BoardColumn
         }
         fun add() {
             val q = Quick.parse(text, repo.topics(), LocalDate.now())
-            if (q.title.isNotBlank()) { repo.addCard(board.id, col.id, q.title, q.deadline, q.priority, q.topicId); text = "" }
+            if (q.title.isNotBlank()) {
+                val id = repo.addCard(board.id, col.id, q.title, q.deadline, q.priority, q.topicId)
+                if (q.repeat != null || q.labels.isNotEmpty()) repo.task(id)?.let { repo.updateTask(it.copy(repeat = q.repeat, labels = q.labels.joinToString(", "))) }
+                text = ""
+            }
         }
         OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
             placeholder = { Text("Новая карточка: «Отчёт в пятницу !»") },

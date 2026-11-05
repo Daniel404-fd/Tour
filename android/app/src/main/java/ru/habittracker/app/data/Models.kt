@@ -22,7 +22,13 @@ data class Task(
     val archived: Boolean = false, val topicId: Long? = null,
     /** Карточка доски (канбан): в обычном списке задач её нет. */
     val boardId: Long? = null, val columnId: Long? = null, val position: Double = 0.0,
-)
+    /** Правило повтора (как на ПК): "d:1", "w:1:0,2", "m:1:-1", "y:1"; метки через запятую; связь с целью и заметкой. */
+    val repeat: String? = null, val labels: String = "", val goalId: Long? = null, val noteId: Long? = null,
+) {
+    val labelList: List<String> get() = Logic.parseLabels(labels)
+}
+
+data class Attachment(val id: Long, val noteId: Long, val name: String, val file: String, val size: Long, val mime: String, val createdAt: String)
 
 data class Board(val id: Long, val name: String, val color: String, val position: Int = 0, val archived: Boolean = false)
 data class BoardColumn(val id: Long, val boardId: Long, val name: String, val position: Int, val isDone: Boolean)
@@ -147,14 +153,93 @@ object Logic {
         if (!g.financial || g.targetAmount <= 0) 0.0 else (saved / g.targetAmount).coerceIn(0.0, 1.0)
 
     /** Как на ПК: обычная — по шагам; финансовая — по деньгам, а с шагами — поровну. */
-    fun goalProgress(g: Goal, steps: List<GoalStep>, saved: Double): Double {
+    /** linked — выполнены ли задачи, привязанные к цели (считаются как шаги). */
+    fun goalProgress(g: Goal, steps: List<GoalStep>, saved: Double, linked: List<Boolean> = emptyList()): Double {
         if (g.done) return 1.0
-        val stepsPart = if (steps.isEmpty()) null else steps.count { it.done }.toDouble() / steps.size
+        val marks = steps.map { it.done } + linked
+        val stepsPart = if (marks.isEmpty()) null else marks.count { it }.toDouble() / marks.size
         if (g.financial && g.targetAmount > 0) {
             val m = moneyProgress(g, saved)
             return if (stepsPart == null) m else (m + stepsPart) / 2
         }
         return stepsPart ?: 0.0
+    }
+
+    // ---------------------------------------------------------------- повторы и метки (как logic.py)
+    val REPEAT_CHOICES = listOf<Pair<String?, String>>(null to "Не повторять", "d:1" to "Каждый день",
+        "w:1:0,1,2,3,4" to "По будням", "w:1" to "Каждую неделю", "w:2" to "Раз в две недели", "m:1" to "Каждый месяц",
+        "m:1:-1" to "В последний день месяца", "y:1" to "Каждый год")
+
+    private fun parseRule(rule: String): Triple<String, Int, List<Int>> {
+        val p = rule.split(":")
+        val n = p.getOrNull(1)?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+        val extra = p.getOrNull(2)?.split(",")?.mapNotNull { it.trim().toIntOrNull() } ?: emptyList()
+        return Triple(p[0], n, extra)
+    }
+
+    private fun addMonths(d: LocalDate, months: Long, day: Int): LocalDate {
+        val m = d.withDayOfMonth(1).plusMonths(months)
+        val last = m.lengthOfMonth()
+        return m.withDayOfMonth(if (day == -1 || day > last) last else day)
+    }
+
+    /** Следующий срок повторяющейся задачи — после прежнего и не раньше сегодня. */
+    fun nextDue(rule: String, due: LocalDate?, today: LocalDate): LocalDate {
+        val (kind, n, extra) = parseRule(rule)
+        val base = due ?: today
+        fun weekStart(d: LocalDate) = d.minusDays((d.dayOfWeek.value - 1).toLong())
+        fun step(d: LocalDate): LocalDate = when (kind) {
+            "d" -> d.plusDays(n.toLong())
+            "w" -> {
+                val days = extra.toSet().ifEmpty { setOf(base.dayOfWeek.value - 1) }
+                var x = d.plusDays(1)
+                var found: LocalDate? = null
+                repeat(7 * n + 7) {
+                    if (found == null) {
+                        val weeks = ChronoUnit.DAYS.between(weekStart(base), weekStart(x)) / 7
+                        if ((x.dayOfWeek.value - 1) in days && weeks % n == 0L) found = x else x = x.plusDays(1)
+                    }
+                }
+                found ?: d.plusWeeks(n.toLong())
+            }
+            "m" -> addMonths(d, n.toLong(), extra.firstOrNull() ?: base.dayOfMonth)
+            "y" -> addMonths(d, 12L * n, base.dayOfMonth)
+            else -> d.plusDays(1)
+        }
+        var next = step(base)
+        var guard = 0
+        while (next.isBefore(today) && guard < 2000) { next = step(next); guard++ }
+        return next
+    }
+
+    fun repeatText(rule: String?): String {
+        if (rule.isNullOrEmpty()) return "Не повторять"
+        REPEAT_CHOICES.firstOrNull { it.first == rule }?.let { return it.second }
+        val (kind, n, extra) = parseRule(rule)
+        val wd = listOf("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+        return when (kind) {
+            "d" -> if (n > 1) "Каждые $n ${plural(n.toLong(), "день", "дня", "дней")}" else "Каждый день"
+            "w" -> (if (n == 1) "Каждую неделю" else "Раз в $n ${plural(n.toLong(), "неделю", "недели", "недель")}") +
+                (extra.filter { it in 0..6 }.sorted().distinct().takeIf { it.isNotEmpty() }?.joinToString(", ", ": ") { wd[it] } ?: "")
+            "m" -> (if (n == 1) "Каждый месяц" else "Раз в $n ${plural(n.toLong(), "месяц", "месяца", "месяцев")}") +
+                when { extra.firstOrNull() == -1 -> ", в последний день"; extra.isNotEmpty() -> ", ${extra[0]}-го"; else -> "" }
+            "y" -> if (n == 1) "Каждый год" else "Раз в $n ${plural(n.toLong(), "год", "года", "лет")}"
+            else -> "Повтор"
+        }
+    }
+
+    fun parseLabels(text: String): List<String> {
+        val seen = mutableSetOf<String>()
+        return text.replace(";", ",").split(",").map { it.trim().trimStart('#').trim() }
+            .filter { it.isNotEmpty() && seen.add(it.lowercase()) }
+    }
+
+    private val LABEL_COLORS = listOf("#B42318", "#B45309", "#15803D", "#0F6E6A", "#1D4ED8", "#7E22CE", "#BE185D", "#374151")
+    /** Цвет метки — тот же, что на ПК (хеш названия). */
+    fun labelColor(name: String): String {
+        var h = 0L
+        for (ch in name.lowercase()) h = (h * 31 + ch.code) and 0xFFFFFFFFL
+        return LABEL_COLORS[(h % LABEL_COLORS.size).toInt()]
     }
 
     fun formatMoney(amount: Double): String {
@@ -187,7 +272,8 @@ object Logic {
 
 // ---------------------------------------------------------------- быстрое добавление (как logic.parse_quick_task)
 
-data class QuickTask(val title: String, val deadline: LocalDate?, val topicId: Long?, val priority: Int, val hints: List<String>)
+data class QuickTask(val title: String, val deadline: LocalDate?, val topicId: Long?, val priority: Int, val hints: List<String>,
+                     val repeat: String? = null, val labels: List<String> = emptyList())
 
 object Quick {
     private val WEEKDAYS = mapOf("пн" to 0, "понедельник" to 0, "вт" to 1, "вторник" to 1, "ср" to 2, "среда" to 2, "среду" to 2,
@@ -211,7 +297,22 @@ object Quick {
         return res
     }
 
+    private val WD_ACC = mapOf("понедельник" to 0, "вторник" to 1, "среду" to 2, "четверг" to 3, "пятницу" to 4, "субботу" to 5, "воскресенье" to 6)
+    private val EVERY_WD = mapOf("каждый" to setOf("понедельник", "вторник", "четверг"), "каждую" to setOf("среду", "пятницу", "субботу"),
+        "каждое" to setOf("воскресенье"))
+
+    /** «каждый день», «по будням», «еженедельно», «каждую пятницу» → правило и сколько слов занято. */
+    private fun repeatPhrase(w1: String, w2: String): Pair<String?, Int> {
+        mapOf("ежедневно" to "d:1", "еженедельно" to "w:1", "ежемесячно" to "m:1", "ежегодно" to "y:1")[w1]?.let { return it to 1 }
+        mapOf(("каждый" to "день") to "d:1", ("по" to "будням") to "w:1:0,1,2,3,4", ("каждую" to "неделю") to "w:1",
+            ("каждый" to "месяц") to "m:1", ("каждый" to "год") to "y:1")[w1 to w2]?.let { return it to 2 }
+        if (EVERY_WD[w1]?.contains(w2) == true) return "w:1:${WD_ACC.getValue(w2)}" to 2
+        return null to 0
+    }
+
     fun parse(text: String, topics: List<Topic>, today: LocalDate, defaultTopic: Long? = null): QuickTask {
+        var repeat: String? = null
+        val labels = mutableListOf<String>()
         val words = text.split(Regex("\\s+")).filter { it.isNotEmpty() }
         val keep = mutableListOf<String>()
         var deadline: LocalDate? = null
@@ -222,7 +323,14 @@ object Quick {
             val raw = words[i]
             val low = raw.lowercase().trim(',', '.')
             val next = if (i + 1 < words.size) words[i + 1].lowercase().trim(',', '.') else ""
+            val (rule, used) = repeatPhrase(low, next)
             when {
+                rule != null && repeat == null -> {
+                    repeat = rule
+                    if (used == 2) i++
+                    if (rule.startsWith("w:1:") && deadline == null && "," !in rule) deadline = nextWeekday(today, rule.split(":")[2].toInt())
+                }
+                raw.startsWith("@") && raw.length > 1 -> labels += raw.substring(1).trim(',', '.')
                 raw == "!" || raw == "!!" || raw == "!!!" -> priority = PRIORITY_HIGH
                 low in REL && deadline == null -> deadline = today.plusDays(REL.getValue(low))
                 (low == "в" || low == "во") && next in WEEKDAYS && deadline == null -> { deadline = nextWeekday(today, WEEKDAYS.getValue(next)); i++ }
@@ -238,13 +346,16 @@ object Quick {
             }
             i++
         }
+        if (repeat != null && deadline == null) deadline = today
         val hints = mutableListOf<String>()
         deadline?.let { d ->
             hints += "срок: ${Logic.WD[d.dayOfWeek.value - 1]}, ${d.dayOfMonth} ${Logic.MONTHS_GEN[d.monthValue - 1]}" +
                 (if (d.year != today.year) " ${d.year}" else "") + " (${Logic.dueText(d, today)})"
         }
         topicId?.let { id -> topics.firstOrNull { it.id == id }?.let { hints += "тема: ${it.name}" } }
+        repeat?.let { hints += "повтор: " + Logic.repeatText(it).lowercase() }
+        if (labels.isNotEmpty()) hints += "метки: " + labels.joinToString(", ")
         if (priority == PRIORITY_HIGH) hints += "высокий приоритет"
-        return QuickTask(keep.joinToString(" ").trim(), deadline, topicId, priority, hints)
+        return QuickTask(keep.joinToString(" ").trim(), deadline, topicId, priority, hints, repeat, labels)
     }
 }

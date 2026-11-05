@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
@@ -60,6 +61,7 @@ fun HomeScreen(nav: Nav) {
     val goals = useData { repo.goals().filter { !it.done && !it.archived }.sortedWith(compareBy({ it.targetDate == null }, { it.targetDate ?: LocalDate.MAX })) }
     val steps = useData { repo.allSteps() }
     val saved = useData { repo.savedAmounts() }
+    val flags = useData { repo.goalTaskFlags() }
     val subs = useData { repo.allSubtasks() }
     var period by remember { mutableStateOf(repo.pref("upcoming_days", "4")!!.toIntOrNull() ?: 4) }
     val t = tok
@@ -67,7 +69,13 @@ fun HomeScreen(nav: Nav) {
     LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(12.dp))
-            Text("${Logic.WEEKDAYS_FULL[today.dayOfWeek.value - 1]}, ${Logic.humanDate(today, today)}", style = Header, color = t.text)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("${Logic.WEEKDAYS_FULL[today.dayOfWeek.value - 1]}, ${Logic.humanDate(today, today)}", style = Header, color = t.text,
+                    modifier = Modifier.weight(1f))
+                androidx.compose.material3.IconButton(onClick = { nav.go("search") }) {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Outlined.Search, "Поиск по всему", tint = t.text2)
+                }
+            }
             val left = habits.count { today !in (marks[it.id] ?: emptySet()) }
             val overdue = tasks.count { Logic.isOverdue(it, today) }
             val h = LocalTime.now().hour
@@ -130,6 +138,10 @@ fun HomeScreen(nav: Nav) {
             }) {
                 Caption("Просроченные и со сроком на " + when (period) { 4 -> "ближайшие 4 дня"; 7 -> "ближайшую неделю"; else -> "ближайшие две недели" })
                 if (upcoming.isEmpty()) Secondary("На ближайшие дни сроков нет.")
+                val late = upcoming.filter { Logic.isOverdue(it, today) }
+                if (late.isNotEmpty()) TextButton(onClick = { late.forEach { repo.updateTask(it.copy(deadline = today)) } }) {
+                    Text("Всё просроченное (${late.size}) — на сегодня")
+                }
                 upcoming.take(10).forEach { task ->
                     Row(Modifier.fillMaxWidth().clickable {
                         if (task.boardId != null) { nav.boardId = task.boardId; nav.cardId = task.id; nav.go("boards") }
@@ -167,7 +179,7 @@ fun HomeScreen(nav: Nav) {
             Card("Цели", action = { TextButton(onClick = { nav.go("goals") }) { Text("Все") } }) {
                 if (goals.isEmpty()) Secondary("Поставьте долгосрочную цель и разбейте её на шаги.")
                 goals.take(3).forEach { g ->
-                    val p = Logic.goalProgress(g, steps[g.id] ?: emptyList(), saved[g.id] ?: 0.0)
+                    val p = Logic.goalProgress(g, steps[g.id] ?: emptyList(), saved[g.id] ?: 0.0, flags[g.id] ?: emptyList())
                     Column(Modifier.fillMaxWidth().clickable { nav.goalId = g.id; nav.go("goals") }.padding(vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row { Text(g.title, Modifier.weight(1f), color = t.text); Caption("${(p * 100).toInt()}%") }

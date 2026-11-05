@@ -21,7 +21,9 @@ def make(out: Path):
         h = db.add_habit("Зарядка", created_on=date(2026, 1, 1))
         db.set_mark(h, date(2026, 1, 2), True)
         tp = db.add_topic("Работа", "#000080")
-        tid = db.add_task(Task(0, "Сдать отчёт", deadline=date(2026, 2, 1), topic_id=tp))
+        g0 = db.add_goal(Goal(0, "Повышение"))
+        tid = db.add_task(Task(0, "Сдать отчёт", deadline=date(2026, 2, 1), topic_id=tp, repeat="m:1:-1",
+                               labels="работа, срочно", goal_id=g0))
         db.add_subtask(tid, "Собрать цифры")
         db.set_subtask_done(db.add_subtask(tid, "Отправить"), True)
         g = db.add_goal(Goal(0, "Отпуск", financial=True, target_amount=100000.0))
@@ -31,6 +33,9 @@ def make(out: Path):
         cols = db.list_columns(b)
         db.add_card(b, cols[1].id, "Ревью договора")
         db.add_note("Контакты", "Иван", board_id=b)
+        from tracker import attachments
+        att_note = db.add_note("С вложением", "")
+        attachments.add_bytes(db, att_note, b"hello", "привет.txt")
         f = db.add_folder("Идеи")
         db.add_note("Ёлка", "Купить игрушки", folder_id=f)
         cal = db.list_calendars()[0].id
@@ -63,6 +68,10 @@ def check(src: Path):
         assert card.title == "Логотип" and card.column_id == cols[2].id and card.done
         assert all(t.board_id is None for t in db.list_tasks())
         assert [n.title for n in db.list_notes(board_id=b.id)] == ["Бриф"]
+        r = next(t for t in db.list_tasks() if t.title == "Планёрка")
+        assert r.repeat == "w:1:0,1,2,3,4" and r.label_list == ["работа"] and db.get_goal(r.goal_id).title == "Машина"
+        [a] = db.list_attachments()
+        assert a.name == "фото.jpg" and db.get_note(a.note_id).title == "С фото"
     print("ok: Android → ПК")
 
 

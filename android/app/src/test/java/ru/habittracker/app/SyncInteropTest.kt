@@ -34,6 +34,12 @@ class SyncInteropTest {
         val task = repo.tasks().first { it.title == "Сдать отчёт" }
         assertEquals("Работа", repo.topics().first { it.id == task.topicId }.name)
         assertEquals(listOf("Собрать цифры" to false, "Отправить" to true), repo.subtasks(task.id).map { it.title to it.done })
+        assertEquals("m:1:-1", task.repeat)
+        assertEquals(listOf("работа", "срочно"), task.labelList)
+        assertEquals("Повышение", repo.goals().first { it.id == task.goalId }.title)
+        val att = repo.attachments().single()
+        assertEquals("привет.txt" to 5L, att.name to att.size)
+        assertEquals("С вложением", repo.note(att.noteId)!!.title)
         val g = repo.goals().first { it.title == "Отпуск" }
         assertTrue(g.financial)
         assertEquals(2500.5, repo.savedAmounts()[g.id]!!, 0.001)
@@ -114,6 +120,57 @@ class SyncInteropTest {
     }
 
     @Test
+    fun repeatingTaskSpawnsNext() {
+        val repo = newRepo()
+        val today = LocalDate.now()
+        val id = repo.addTask(Task(title = "Отчёт", deadline = today, repeat = "d:1", labels = "работа"))
+        repo.applySubtasks(id, listOf(SubtaskDraft(0, "цифры", true)))
+        repo.completeTask(id)
+        val old = repo.task(id)!!
+        assertTrue(old.done && old.repeat == null)
+        val next = repo.tasks().single { !it.done }
+        assertEquals(today.plusDays(1), next.deadline)
+        assertEquals("d:1", next.repeat)
+        assertEquals(listOf("цифры" to false), repo.subtasks(next.id).map { it.title to it.done })
+        // карточка возвращается в первую колонку
+        val b = repo.addBoard("Работа", "#1D4ED8")
+        val (todo, _, done) = repo.columns(b)
+        val c = repo.addCard(b, todo.id, "Планёрка", today)
+        repo.updateTask(repo.task(c)!!.copy(repeat = "w:1"))
+        repo.moveCard(c, done.id, 0)
+        val again = repo.boardTasks(b).single { it.id != c }
+        assertEquals(todo.id to today.plusDays(7), again.columnId to again.deadline)
+    }
+
+    @Test
+    fun goalProgressWithLinkedTasks() {
+        val repo = newRepo()
+        val g = repo.addGoal(Goal(title = "Права"))
+        repo.addStep(g, "Справка")
+        val a = repo.addTask(Task(title = "Автошкола", goalId = g))
+        repo.addTask(Task(title = "Теория", goalId = g))
+        repo.completeTask(a)
+        val goal = repo.goals().single()
+        assertEquals(1.0 / 3, ru.habittracker.app.data.Logic.goalProgress(goal, repo.allSteps()[g] ?: emptyList(), 0.0, repo.goalTaskFlags()[g]!!), 1e-9)
+    }
+
+    @Test
+    fun attachmentsStoreAndCleanup() {
+        val ctx = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val repo = newRepo()
+        val n = repo.addNote()
+        val id = ru.habittracker.app.data.Attachments.addBytes(ctx, repo, n, "текст".toByteArray(), "заметка.txt")
+        val a = repo.attachments(n).single()
+        assertEquals(id, a.id)
+        assertTrue(ru.habittracker.app.data.Attachments.file(ctx, a).exists())
+        assertEquals("text", ru.habittracker.app.data.Attachments.kind(a.name))
+        repo.deleteNote(n)
+        assertTrue(repo.attachments().isEmpty())
+        assertTrue(ru.habittracker.app.data.Attachments.cleanup(ctx, repo) >= 1)
+        assertTrue(!ru.habittracker.app.data.Attachments.file(ctx, a).exists())
+    }
+
+    @Test
     fun customColorsStayReadable() {
         for (dark in listOf(false, true)) for (c in listOf("#FFD700", "#000000", "#BE185D", "#0F6E6A")) {
             val t = ru.habittracker.app.ui.derive(if (dark) ru.habittracker.app.ui.DarkTokens else ru.habittracker.app.ui.LightTokens, dark, c, c)
@@ -148,6 +205,9 @@ class SyncInteropTest {
         repo.moveCard(card, cols[2].id, 0)
         val bn = repo.addNote(boardId = b); repo.updateNote(bn, "Бриф", "")
         val g = repo.addGoal(Goal(title = "Машина", financial = true, targetAmount = 500000.0))
+        repo.addTask(Task(title = "Планёрка", repeat = "w:1:0,1,2,3,4", labels = "работа", goalId = g))
+        val pn = repo.addNote(); repo.updateNote(pn, "С фото", "")
+        ru.habittracker.app.data.Attachments.addBytes(ApplicationProvider.getApplicationContext(), repo, pn, byteArrayOf(1, 2, 3), "фото.jpg", "image/jpeg")
         repo.addContribution(g, 1000.0)
         val out = File(System.getProperty("interop.out") ?: "build/interop/android-payload.json.gz")
         out.parentFile?.mkdirs()

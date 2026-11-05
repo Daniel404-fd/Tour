@@ -88,7 +88,7 @@ class Nav(tab: String) {
 
     fun go(key: String) {
         when (key) {
-            "goals", "notes", "settings", "stats" -> { tab = "more"; more = key }
+            "goals", "notes", "settings", "stats", "search" -> { tab = "more"; more = key }
             else -> { tab = key; if (key != "more") more = null }
         }
     }

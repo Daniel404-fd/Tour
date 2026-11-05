@@ -29,7 +29,7 @@ class WebDav(private val base: String, login: String, password: String, private 
 
     private fun url(name: String = ""): String {
         val enc = { s: String -> URLEncoder.encode(s, "UTF-8").replace("+", "%20") }
-        return base.trimEnd('/') + "/" + enc(folder) + "/" + (if (name.isEmpty()) "" else enc(name))
+        return base.trimEnd('/') + "/" + folder.split("/").joinToString("/") { enc(it) } + "/" + (if (name.isEmpty()) "" else enc(name))
     }
 
     private fun call(method: String, url: String, body: ByteArray? = null, headers: Map<String, String> = emptyMap(),

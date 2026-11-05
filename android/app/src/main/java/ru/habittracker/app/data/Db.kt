@@ -29,6 +29,12 @@ class Db(context: Context, name: String? = "tracker.sqlite3") :
             db.execSQL("ALTER TABLE tasks ADD COLUMN column_id INTEGER REFERENCES board_columns(id) ON DELETE SET NULL")
             db.execSQL("ALTER TABLE tasks ADD COLUMN position REAL")
         }
+        if ("repeat" !in cols("tasks")) {     // повторы, метки, связь с целью и заметкой
+            db.execSQL("ALTER TABLE tasks ADD COLUMN repeat TEXT")
+            db.execSQL("ALTER TABLE tasks ADD COLUMN labels TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE tasks ADD COLUMN goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL")
+            db.execSQL("ALTER TABLE tasks ADD COLUMN note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL")
+        }
         if ("board_id" !in cols("notes"))
             db.execSQL("ALTER TABLE notes ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
     }
@@ -88,6 +94,15 @@ CREATE TABLE IF NOT EXISTS board_columns (
     name     TEXT    NOT NULL,
     position INTEGER NOT NULL DEFAULT 0,
     is_done  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS note_attachments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    file       TEXT    NOT NULL,
+    size       INTEGER NOT NULL DEFAULT 0,
+    mime       TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topics (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -190,18 +205,20 @@ object SyncSchema {
         "goal_contributions" to (listOf("goal_id", "day", "amount", "note") to mapOf("goal_id" to "goals")),
         "boards" to (listOf("name", "color", "position", "archived") to emptyMap()),
         "board_columns" to (listOf("board_id", "name", "position", "is_done") to mapOf("board_id" to "boards")),
-        "tasks" to (listOf("title", "description", "deadline", "priority", "done", "completed_on",
-            "archived", "topic_id", "board_id", "column_id", "position") to
-            mapOf("topic_id" to "topics", "board_id" to "boards", "column_id" to "board_columns")),
-        "task_subtasks" to (listOf("task_id", "title", "done", "position") to mapOf("task_id" to "tasks")),
         "notes" to (listOf("title", "body", "pinned", "created_at", "updated_at", "folder_id", "board_id") to
             mapOf("folder_id" to "note_folders", "board_id" to "boards")),
+        "note_attachments" to (listOf("note_id", "name", "file", "size", "mime", "created_at") to mapOf("note_id" to "notes")),
+        "tasks" to (listOf("title", "description", "deadline", "priority", "done", "completed_on",
+            "archived", "topic_id", "board_id", "column_id", "position", "repeat", "labels", "goal_id", "note_id") to
+            mapOf("topic_id" to "topics", "board_id" to "boards", "column_id" to "board_columns", "goal_id" to "goals",
+                "note_id" to "notes")),
+        "task_subtasks" to (listOf("task_id", "title", "done", "position") to mapOf("task_id" to "tasks")),
         "events" to (listOf("title", "start", "end", "all_day", "calendar_id", "color", "description",
             "location", "freq", "interval", "weekdays", "until", "exdates", "reminder") to
             mapOf("calendar_id" to "calendars")),
     )
     val REQUIRED_REFS = setOf("habit_marks.habit_id", "goal_steps.goal_id",
-        "goal_contributions.goal_id", "events.calendar_id", "task_subtasks.task_id", "board_columns.board_id")
+        "goal_contributions.goal_id", "events.calendar_id", "task_subtasks.task_id", "board_columns.board_id", "note_attachments.note_id")
 
     fun install(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS sync_tombstones (uid TEXT PRIMARY KEY, tbl TEXT NOT NULL, ts TEXT NOT NULL)")

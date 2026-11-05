@@ -150,7 +150,8 @@ fun TasksScreen(nav: Nav) {
                 }
                 Spacer(Modifier.height(8.dp))
                 QuickAdd(topics, if (topic > 0) topic else null) { q ->
-                    val id = repo.addTask(Task(title = q.title, deadline = q.deadline, priority = q.priority, topicId = q.topicId))
+                    val id = repo.addTask(Task(title = q.title, deadline = q.deadline, priority = q.priority, topicId = q.topicId,
+                        repeat = q.repeat, labels = q.labels.joinToString(", ")))
                     if (status != "active" && status != "all") status = "active"
                     if (topic != TOPIC_ALL && topic != (q.topicId ?: TOPIC_NONE)) pickTopic(TOPIC_ALL)
                     scope.launch { snackbar.showSnackbar("Добавлено: ${q.title}", duration = SnackbarDuration.Short) }
@@ -203,7 +204,7 @@ private fun QuickAdd(topics: List<Topic>, defaultTopic: Long?, onAdd: (QuickTask
     fun submit() { if (q.title.isNotBlank()) { onAdd(q); text = "" } }
     Column(Modifier.padding(horizontal = 16.dp)) {
         OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-            placeholder = { Text("Быстро: «Купить молоко завтра #дом !»") },
+            placeholder = { Text("Быстро: «Зарядка каждый день», «Отчёт в пт @клиент !»") },
             trailingIcon = { if (q.title.isNotBlank()) IconButton(onClick = { submit() }) { Icon(Icons.Filled.Add, "Добавить задачу", tint = t.link) } },
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Done),
             keyboardActions = androidx.compose.foundation.text.KeyboardActions(onDone = { submit() }))
@@ -283,6 +284,8 @@ private fun TaskRow(task: Task, topic: Topic?, today: LocalDate, subs: List<Subt
                     val txt = d.format(java.time.format.DateTimeFormatter.ofPattern("dd.MM")) + if (!task.done && !task.archived) " · ${Logic.dueText(d, today)}" else ""
                     Caption(txt, color = when { overdue -> t.danger; dueToday -> t.warn; else -> t.text2 })
                 }
+                if (task.repeat != null) { Spacer(Modifier.width(8.dp)); Caption("↻") }
+                task.labelList.forEach { l -> Spacer(Modifier.width(8.dp)); Caption("#$l", color = hex(Logic.labelColor(l))) }
             }
         }
         if (subs.isNotEmpty()) {
@@ -304,6 +307,18 @@ private fun TaskRow(task: Task, topic: Topic?, today: LocalDate, subs: List<Subt
                 textDecoration = if (st.done) TextDecoration.LineThrough else null)
         }
     }
+    }
+}
+
+/** Кнопка с выпадающим списком вариантов. */
+@Composable
+fun Picker(current: String, options: List<String>, onPick: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { open = true }) { Text(current, maxLines = 1); Icon(Icons.Filled.KeyboardArrowDown, null) }
+        DropdownMenu(open, { open = false }) {
+            options.forEachIndexed { i, o -> DropdownMenuItem(text = { Text(o) }, onClick = { open = false; onPick(i) }) }
+        }
     }
 }
 
@@ -351,6 +366,12 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
     var done by remember { mutableStateOf(task.done) }
     var confirmDelete by remember { mutableStateOf(false) }
     var drafts by remember { mutableStateOf(repo.subtasks(task.id).map { SubtaskDraft(it.id, it.title, it.done) }) }
+    var repeatRule by remember { mutableStateOf(task.repeat) }
+    var labels by remember { mutableStateOf(task.labelList.joinToString(", ")) }
+    var goalId by remember { mutableStateOf(task.goalId) }
+    var noteId by remember { mutableStateOf(task.noteId) }
+    val goals = remember { repo.goals().filter { !it.done && !it.archived || it.id == task.goalId } }
+    val notes = remember { repo.notes() + (task.boardId?.let { repo.boardNotes(it) } ?: emptyList()) }
     val t = tok
     AlertDialog(onDismissRequest = onClose, title = { Text(if (task.id == 0L) "Новая задача" else "Задача") },
         text = {
@@ -390,6 +411,23 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
                         topics.forEach { tp -> Chip(tp.name, topicId == tp.id, dot = hex(tp.color)) { topicId = tp.id } }
                     }
                 }
+                Caption("Повтор")
+                Picker(Logic.repeatText(repeatRule), Logic.REPEAT_CHOICES.map { it.second }) { i -> repeatRule = Logic.REPEAT_CHOICES[i].first }
+                if (repeatRule != null) Caption("Когда отметите выполненной, рядом появится следующая — со следующим сроком.")
+                OutlinedTextField(labels, { labels = it }, label = { Text("Метки через запятую") },
+                    placeholder = { Text("срочно, клиент") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (goals.isNotEmpty()) {
+                    Caption("Шаг к цели")
+                    Picker(goals.firstOrNull { it.id == goalId }?.title ?: "Не связана с целью", listOf("Не связана с целью") + goals.map { it.title }) { i ->
+                        goalId = if (i == 0) null else goals[i - 1].id
+                    }
+                }
+                if (notes.isNotEmpty()) {
+                    Caption("Заметка")
+                    Picker(notes.firstOrNull { it.id == noteId }?.displayTitle ?: "Без заметки", listOf("Без заметки") + notes.map { it.displayTitle }) { i ->
+                        noteId = if (i == 0) null else notes[i - 1].id
+                    }
+                }
                 SubtaskEditor(drafts) { drafts = it }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(done, { done = it }, colors = CheckboxDefaults.colors(checkedColor = t.accent)); Text("Выполнена")
@@ -405,7 +443,8 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
         confirmButton = {
             TextButton(enabled = title.isNotBlank(), onClick = {
                 val upd = task.copy(title = title.trim(), description = desc.trim(), deadline = deadline, priority = priority,
-                    topicId = topicId, done = done, completedOn = if (done && task.done) task.completedOn else null)
+                    topicId = topicId, done = done, completedOn = if (done && task.done) task.completedOn else null,
+                    repeat = repeatRule, labels = Logic.parseLabels(labels).joinToString(", "), goalId = goalId, noteId = noteId)
                 val id = if (task.id == 0L) repo.addTask(upd) else { repo.updateTask(upd); task.id }
                 repo.applySubtasks(id, drafts)
                 if (task.boardId != null && done != task.done) repo.completeTask(id, done)   // карточка — в «Готово» или обратно
