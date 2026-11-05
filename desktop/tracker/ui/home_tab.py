@@ -318,7 +318,8 @@ class HomePage(w.Page):
             title = w.label(g.title)
             title.setTextFormat(Qt.PlainText)
             head.addWidget(title, 1)
-            prog = logic.goal_progress(g, steps.get(g.id, []), self._saved.get(g.id, 0.0))
+            prog = logic.goal_progress(g, steps.get(g.id, []), self._saved.get(g.id, 0.0),
+                                       self.db.goal_task_flags().get(g.id, []))
             head.addWidget(w.label(f"{round(prog * 100)}%", "secondary"))
             lay.addLayout(head)
             lay.addWidget(progress_bar(prog))

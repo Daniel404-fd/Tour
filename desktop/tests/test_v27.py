@@ -211,7 +211,8 @@ def test_sidebar_collapse_and_restore(tmp_path, app):
     assert win.splitter.sizes()[0] == SIDEBAR_ICONS
     assert s.db.get_pref("ui_sidebar").endswith(":1")
     win.navigate("boards")
-    assert win.stack.currentWidget() is win.pages[4]
+    from tracker.ui.main_window import BOARDS
+    assert win.stack.currentWidget() is win.pages[BOARDS]
     win.close()
 
 

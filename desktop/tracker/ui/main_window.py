@@ -23,10 +23,12 @@ from .settings_tab import SettingsPage
 from .sync_controller import SyncController
 from .stats_tab import StatsPage
 from .tasks_tab import TasksPage
+from .today_tab import TodayPage
 from .theme import repolish as theme_repolish, theme
 
 SECTIONS = [
     ("home", "Главная", HomePage),
+    ("today", "Сегодня", TodayPage),
     ("calendar", "Календарь", CalendarPage),
     ("habits", "Привычки", HabitsPage),
     ("tasks", "Задачи", TasksPage),
@@ -36,7 +38,7 @@ SECTIONS = [
     ("stats", "Статистика", StatsPage),
     ("settings", "Настройки", SettingsPage),
 ]
-HOME, CALENDAR, HABITS, TASKS, BOARDS, GOALS, NOTES, STATS, SETTINGS = range(len(SECTIONS))
+HOME, TODAY, CALENDAR, HABITS, TASKS, BOARDS, GOALS, NOTES, STATS, SETTINGS = range(len(SECTIONS))
 SIDEBAR_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_ICONS = 150, 210, 340, 60
 KEY_INDEX = {key: i for i, (key, _, _) in enumerate(SECTIONS)}
 
@@ -122,6 +124,18 @@ class MainWindow(QMainWindow):
         top.addWidget(self.app_title, 1)
         top.addWidget(self.collapse_btn)
         sp.addLayout(top)
+        # поиск по всему — как в Notion: строка сверху панели, Ctrl+K
+        from PySide6.QtWidgets import QPushButton
+        self.search_btn = QPushButton("  Поиск")
+        self.search_btn.setObjectName("sidebarSearch")
+        self.search_btn.setCursor(Qt.PointingHandCursor)
+        self.search_btn.setToolTip("Поиск и команды (Ctrl+K)")
+        self.search_btn.setAccessibleName("Поиск и команды")
+        self.search_btn.clicked.connect(self.open_palette)
+        srow = QHBoxLayout()
+        srow.setContentsMargins(8, 10, 8, 0)
+        srow.addWidget(self.search_btn)
+        sp.addLayout(srow)
         sp.addWidget(self.sidebar, 1)
         self.splitter.addWidget(self.sidebar_panel)
 
@@ -153,11 +167,65 @@ class MainWindow(QMainWindow):
             QShortcut(QKeySequence(f"Ctrl+{i + 1}"), self,
                       activated=lambda i=i: self.sidebar.setCurrentRow(i))
         QShortcut(QKeySequence("Ctrl+\\"), self, activated=self.toggle_sidebar)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.open_palette)
         QShortcut(QKeySequence.New, self, activated=self._new_item)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=self.lock)
         theme.changed.connect(self._on_theme_changed)
         self._setup_reminders()
         QTimer.singleShot(1500, self.sync.run)   # синхронизация вскоре после запуска
+
+    def open_palette(self) -> None:
+        from .palette import CommandPalette
+        self._flush()
+        dlg = CommandPalette(self, [(k, t) for k, t, _ in SECTIONS])
+        g = self.geometry()
+        dlg.adjustSize()
+        dlg.move(g.x() + (g.width() - dlg.width()) // 2, g.y() + 90)
+        dlg.exec()
+
+    # ---- «Удалено · Отменить» ----
+
+    def show_undo(self, text: str, commit, cancel) -> None:
+        if getattr(self, "_undo", None) is not None:
+            self._finish_undo(apply=True)        # прежнее удаление больше не отменить
+        from PySide6.QtWidgets import QFrame, QPushButton
+        toast = QFrame(self)
+        toast.setObjectName("toast")
+        lay = QHBoxLayout(toast)
+        lay.setContentsMargins(16, 8, 8, 8)
+        lay.setSpacing(12)
+        lab = QLabel(text)
+        lab.setObjectName("toastText")
+        lab.setTextFormat(Qt.PlainText)
+        lab.setMaximumWidth(420)
+        btn = QPushButton("Отменить")
+        btn.setObjectName("toastBtn")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setShortcut(QKeySequence("Ctrl+Z"))
+        btn.setToolTip("Ctrl+Z")
+        lay.addWidget(lab)
+        lay.addWidget(btn)
+        toast.adjustSize()
+        toast.move((self.width() - toast.width()) // 2 + self.sidebar_panel.width() // 2, self.height() - toast.height() - 24)
+        toast.show()
+        toast.raise_()
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self._finish_undo(apply=True))
+        timer.start(6000)
+        self._undo = (toast, timer, commit, cancel)
+        btn.clicked.connect(lambda: self._finish_undo(apply=False))
+
+    def _finish_undo(self, apply: bool) -> None:
+        u = getattr(self, "_undo", None)
+        if u is None:
+            return
+        self._undo = None
+        toast, timer, commit, cancel = u
+        timer.stop()
+        toast.hide()
+        toast.deleteLater()
+        (commit if apply else cancel)()
 
     # ---- боковая панель: свернуть до иконок, тянуть мышью ----
 
@@ -171,6 +239,8 @@ class MainWindow(QMainWindow):
         self.sidebar_panel.setMinimumWidth(SIDEBAR_ICONS if c else SIDEBAR_MIN)
         theme_repolish(self.sidebar)
         self.app_title.setVisible(not c)
+        self.search_btn.setText("" if c else "  Поиск")
+        self.search_btn.setIcon(icons.icon("search", theme["sidebar_icon"]))
         self.collapse_btn.setIcon(icons.icon("chevrons-right" if c else "chevrons-left", theme["sidebar_icon"]))
         self.collapse_btn.setToolTip(("Развернуть" if c else "Свернуть") + " боковую панель (Ctrl+\\)")
         self.collapse_btn.setAccessibleName(self.collapse_btn.toolTip())
@@ -365,6 +435,7 @@ class MainWindow(QMainWindow):
         page.refresh()
 
     def closeEvent(self, event) -> None:
+        self._finish_undo(apply=True)
         self._flush()
         self.sync.sync_blocking()
         super().closeEvent(event)

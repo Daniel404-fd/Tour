@@ -85,6 +85,13 @@ def _path(name: str) -> tuple[QPainterPath, QPainterPath | None]:
             fill.addRoundedRect(QRectF(x - 1.3, y - 1.3, 2.6, 2.6), 0.6, 0.6)
     elif name == "chevron-left":
         p.moveTo(14.5, 6); p.lineTo(8.5, 12); p.lineTo(14.5, 18)
+    elif name == "today":  # солнце: круг и лучи
+        p.addEllipse(QRectF(8, 8, 8, 8))
+        for a in range(8):
+            import math
+            ang = a * math.pi / 4
+            p.moveTo(12 + 6.5 * math.cos(ang), 12 + 6.5 * math.sin(ang))
+            p.lineTo(12 + 9 * math.cos(ang), 12 + 9 * math.sin(ang))
     elif name == "chevrons-left":
         p.moveTo(12, 6.5); p.lineTo(6.5, 12); p.lineTo(12, 17.5)
         p.moveTo(18, 6.5); p.lineTo(12.5, 12); p.lineTo(18, 17.5)

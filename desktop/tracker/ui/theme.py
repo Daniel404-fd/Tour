@@ -234,6 +234,14 @@ def _qss(t: dict) -> str:
                                  margin-bottom: 1px; border-radius: 6px; }}
     QListWidget#sidebar[collapsed="true"]::item {{ padding-left: 13px; }}
     QLabel#appTitle {{ font-weight: 600; font-size: 10.5pt; }}
+    QPushButton#sidebarSearch {{ text-align: left; background: transparent; border: 1px solid transparent;
+                                 border-radius: 6px; padding: 5px 8px; color: {t['text3'] if t.get('sidebar_text') == t.get('sidebar_neutral_text') else t['sidebar_text']}; }}
+    QPushButton#sidebarSearch:hover {{ background: {t['sidebar_hover']}; }}
+    QDialog#palette {{ background: {t['surface']}; }}
+    QLineEdit#paletteEdit {{ font-size: 12pt; padding: 8px 10px; }}
+    QListWidget#paletteList {{ border: none; background: transparent; }}
+    QListWidget#paletteList::item {{ padding: 6px 8px; border-radius: 6px; }}
+    QListWidget#paletteList::item:selected {{ background: {t['selection']}; color: {t['text']}; }}
     QToolButton#collapseBtn {{ border: none; border-radius: 6px; padding: 4px; background: transparent; }}
     QToolButton#collapseBtn:hover {{ background: {t['sidebar_hover']}; }}
     QSplitter::handle {{ background: {t['border']}; }}
@@ -382,6 +390,10 @@ def _qss(t: dict) -> str:
     QMenu::item {{ padding: 6px 22px; border-radius: 5px; }}
     QMenu::item:selected {{ background: {t['hover']}; color: {t['text']}; }}
     QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
+    QFrame#toast {{ background: {t['tip']}; border-radius: 10px; }}
+    QLabel#toastText {{ color: {t['tip_text']}; background: transparent; }}
+    QPushButton#toastBtn {{ background: transparent; border: none; color: {t['tip_text']}; font-weight: 700;
+                            text-decoration: underline; padding: 4px 8px; }}
     QMessageBox {{ background: {t['surface']}; }}
     QMessageBox QLabel {{ background: transparent; }}
     QMessageBox QLabel#qt_msgbox_label {{ font-size: 11pt; font-weight: 600; min-width: 300px; padding: 6px 4px 2px 4px; }}

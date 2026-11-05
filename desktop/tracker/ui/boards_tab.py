@@ -22,6 +22,7 @@ from .tasks_tab import TaskDialog, apply_subtasks
 from .theme import theme, topic_color
 
 MIME = "application/x-tracker-card"
+ALL_BOARDS = -1          # «Все доски» — обзор по срокам
 COLUMN_W = 284
 BOARD_COLORS = ["#0F6E6A", "#1D4ED8", "#7E22CE", "#BE185D", "#B45309", "#15803D", "#374151"]
 
@@ -62,6 +63,10 @@ class CardWidget(QFrame):
             meta.append(f"☑ {done}/{len(subs)}")
         if topic:
             meta.append(f"<span style='color:{topic_color(topic.color).name()}'>●</span> {topic.name}")
+        if task.repeat:
+            meta.append("↻")
+        for lab in task.label_list:
+            meta.append(f"<span style='color:{topic_color(logic.label_color(lab)).name()}; font-weight:600'>#{lab}</span>")
         if meta:
             m = w.label("", "caption", wrap=True)
             m.setTextFormat(Qt.RichText)
@@ -91,8 +96,30 @@ class ColumnList(QListWidget):
         self.itemDoubleClicked.connect(lambda it: page.open_card(it.data(Qt.UserRole)))
         self.currentItemChanged.connect(self._highlight)
         self.itemClicked.connect(lambda it: page.card_selected(it.data(Qt.UserRole)))
+        self.setToolTip("Двойной щелчок — открыть · Ctrl+стрелки — переложить · Delete — удалить (можно отменить)")
         QShortcut(QKeySequence(Qt.Key_Delete), self, activated=self._delete_current)
         QShortcut(QKeySequence(Qt.Key_Return), self, activated=self._open_current)
+
+    def keyPressEvent(self, e) -> None:
+        """Ctrl+←/→ — в соседнюю колонку, Ctrl+↑/↓ — выше/ниже, Пробел — карточка справа."""
+        tid = self._current_id()
+        if tid is not None and e.modifiers() & Qt.ControlModifier and e.key() in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
+            cols = self.page.columns
+            i = next((k for k, c in enumerate(cols) if c.id == self.column.id), 0)
+            row = self.currentRow()
+            if e.key() == Qt.Key_Left and i > 0:
+                self.page.move_card(tid, cols[i - 1].id, 0, keep_focus=True)
+            elif e.key() == Qt.Key_Right and i < len(cols) - 1:
+                self.page.move_card(tid, cols[i + 1].id, 0, keep_focus=True)
+            elif e.key() == Qt.Key_Up and row > 0:
+                self.page.move_card(tid, self.column.id, row - 1, keep_focus=True)
+            elif e.key() == Qt.Key_Down and row < self.count() - 1:
+                self.page.move_card(tid, self.column.id, row + 1, keep_focus=True)
+            return
+        if tid is not None and e.key() == Qt.Key_Space:
+            self.page.card_selected(tid)
+            return
+        super().keyPressEvent(e)
 
     def _highlight(self, cur, prev) -> None:
         from .theme import repolish
@@ -178,10 +205,18 @@ class ColumnList(QListWidget):
         m.exec(self.viewport().mapToGlobal(pos))
 
 
+OLD_DONE_DAYS = 14      # в «Готово» показываем только недавно законченное
+
+
 class ColumnWidget(QFrame):
     def __init__(self, page: "BoardsPage", column: logic.BoardColumn, cards: list[logic.Task],
                  subs: dict, topics: dict, today: date):
         super().__init__()
+        hidden_old = []
+        if column.is_done and not page.show_old.get(column.id):
+            fresh = [t for t in cards if not (t.done and t.completed_on and (today - t.completed_on).days > OLD_DONE_DAYS)]
+            hidden_old = [t for t in cards if t not in fresh]
+            cards = fresh
         self.page = page
         self.column = column
         self.setObjectName("kanbanColumn")
@@ -247,6 +282,11 @@ class ColumnWidget(QFrame):
         add_row.addWidget(self.add_btn)
         lay.addLayout(add_row)
         lay.addWidget(self.list, 1)
+        if hidden_old or page.show_old.get(column.id):
+            more_btn = w.button(f"Показать старые ({len(hidden_old)})" if hidden_old else "Скрыть старые", "ghost")
+            more_btn.setToolTip(f"Карточки, законченные больше {OLD_DONE_DAYS} дней назад, прячутся, чтобы колонка не разрасталась")
+            more_btn.clicked.connect(lambda: page.toggle_old(column.id))
+            lay.addWidget(more_btn, 0, Qt.AlignLeft)
 
     def _add(self) -> None:
         text = self.add.text().strip()
@@ -256,7 +296,8 @@ class ColumnWidget(QFrame):
         if not q.title:
             return
         self.page.db.add_card(self.page.board_id, self.column.id, q.title, deadline=q.deadline,
-                              priority=q.priority, topic_id=q.topic_id)
+                              priority=q.priority, topic_id=q.topic_id, repeat=q.repeat,
+                              labels=", ".join(q.labels))
         self.page.refresh(focus_add=self.column.id)
 
 
@@ -451,7 +492,7 @@ class BoardNotes(QFrame):
                     it.setText(("📌 " if n.pinned else "") + n.display_title)
 
     def new_note(self) -> None:
-        if self.page.board_id is None:
+        if self.page.board_id is None or self.page.board_id == ALL_BOARDS:
             return
         self.flush()
         self.current = self.db.add_note(board_id=self.page.board_id)
@@ -487,6 +528,9 @@ class BoardsPage(w.Page):
         self.db = db
         self.navigate = navigate
         self.columns: list[logic.BoardColumn] = []
+        self.show_old: dict[int, bool] = {}
+        self.label_filter: str | None = None
+        self.urgent_only = False
         try:
             self.board_id: int | None = int(db.get_pref("board_current", "0")) or None
         except ValueError:
@@ -519,6 +563,8 @@ class BoardsPage(w.Page):
         self.board_more.setMenu(bm)
         top.addWidget(self.board_more)
         self.content.addLayout(top)
+        self.filter_strip = w.ChipStrip()
+        self.content.addWidget(self.filter_strip)
 
         self.split = QSplitter(Qt.Horizontal)
         self.split.setObjectName("pageSplit")
@@ -534,7 +580,19 @@ class BoardsPage(w.Page):
         self.cols_row.setContentsMargins(0, 0, 0, 4)
         self.cols_row.setSpacing(10)
         self.kanban.setWidget(holder)
-        self.split.addWidget(self.kanban)
+        from PySide6.QtWidgets import QStackedWidget
+        self.left_stack = QStackedWidget()
+        self.left_stack.addWidget(self.kanban)
+        self.overview = QScrollArea()
+        self.overview.setWidgetResizable(True)
+        self.overview.setFrameShape(QFrame.NoFrame)
+        ov = QWidget()
+        self.ov_box = QVBoxLayout(ov)
+        self.ov_box.setContentsMargins(0, 0, 8, 0)
+        self.ov_box.setSpacing(10)
+        self.overview.setWidget(ov)
+        self.left_stack.addWidget(self.overview)
+        self.split.addWidget(self.left_stack)
         self.side = QFrame()
         self.side.setObjectName("card")
         self.side.setMinimumWidth(260)
@@ -719,8 +777,26 @@ class BoardsPage(w.Page):
         self.refresh()
 
     # ---- карточки ----
-    def move_card(self, task_id: int, column_id: int, index: int) -> None:
+    def move_card(self, task_id: int, column_id: int, index: int, keep_focus: bool = False) -> None:
         self.db.move_card(task_id, column_id, index)
+        if keep_focus:
+            self.selected = task_id
+        self.refresh()
+        if keep_focus:                       # фокус остаётся на карточке — можно двигать дальше
+            for cw in (self.cols_row.itemAt(i).widget() for i in range(self.cols_row.count())):
+                if isinstance(cw, ColumnWidget) and cw.column.id == column_id:
+                    cw.list.setFocus()
+
+    def toggle_old(self, column_id: int) -> None:
+        self.show_old[column_id] = not self.show_old.get(column_id)
+        self.refresh()
+
+    def _set_label(self, name: str | None) -> None:
+        self.label_filter = name
+        self.refresh()
+
+    def _set_urgent(self, on: bool) -> None:
+        self.urgent_only = on
         self.refresh()
 
     def move_to_board(self, task_id: int, board_id: int) -> None:
@@ -743,16 +819,16 @@ class BoardsPage(w.Page):
 
     def delete_card(self, task_id: int) -> None:
         t = self.db.get_task(task_id)
-        if t and w.confirm(self, "Удалить карточку", f"Удалить «{t.title}»?",
-                           "Вместе с подзадачами. Это нельзя отменить."):
-            self.db.delete_task(task_id)
-            self.refresh()
+        if t:
+            if getattr(self, "selected", None) == task_id:
+                self.selected = None
+            w.delete_task_with_undo(self, self.db, task_id, t.title)
 
     def open_card(self, task_id: int) -> None:
         t = self.db.get_task(task_id)
         if t is None:
             return
-        dlg = TaskDialog(self, self.db.list_topics(), t, subtasks=self.db.subtasks(task_id))
+        dlg = TaskDialog(self, self.db.list_topics(), t, subtasks=self.db.subtasks(task_id), db=self.db)
         dlg.setWindowTitle("Карточка")
         if dlg.exec() == QDialog.Accepted:
             subs = dlg.result_subtasks()
@@ -800,10 +876,97 @@ class BoardsPage(w.Page):
     def flush(self) -> None:
         self.notes.flush()
 
+    # ---- фильтры и обзор всех досок ----
+    def _filtered(self, cards: list, today: date) -> list:
+        if self.label_filter:
+            cards = [t for t in cards if self.label_filter.lower() in (l.lower() for l in t.label_list)]
+        if self.urgent_only:
+            cards = [t for t in cards if not t.done and (t.priority == logic.PRIORITY_HIGH or
+                     (t.deadline is not None and (t.deadline - today).days <= 2))]
+        return cards
+
+    def _fill_filters(self) -> None:
+        self.filter_strip.clear()
+        if self.board_id is None:
+            self.filter_strip.hide()
+            return
+        self.filter_strip.show()
+        scope = (self.db.list_tasks(include_boards=True) if self.board_id == ALL_BOARDS
+                 else self.db.list_tasks(board_id=self.board_id))
+        labels = sorted({l for t in scope if t.board_id for l in t.label_list}, key=str.lower)
+        urgent = w.chip("Срочное", self.urgent_only)
+        urgent.setToolTip("Важные и со сроком в ближайшие 2 дня (и просроченные)")
+        urgent.toggled.connect(self._set_urgent)
+        self.filter_strip.addWidget(urgent)
+        if labels:
+            allc = w.chip("Все метки", self.label_filter is None)
+            allc.clicked.connect(lambda: self._set_label(None))
+            self.filter_strip.addWidget(allc)
+            for lab in labels:
+                c = w.chip("#" + lab, (self.label_filter or "").lower() == lab.lower())
+                c.setIcon(w.dot_icon(logic.label_color(lab)))
+                c.setIconSize(QSize(10, 10))
+                c.clicked.connect(lambda _=False, l=lab: self._set_label(None if (self.label_filter or "").lower() == l.lower() else l))
+                self.filter_strip.addWidget(c)
+        else:
+            self.filter_strip.addWidget(w.label("Метки ставятся в карточке или прямо при вводе: «Отчёт @клиент»", "caption"))
+        self.filter_strip.addStretch()
+
+    def _fill_overview(self, boards: list) -> None:
+        w.clear_layout(self.ov_box)
+        today = date.today()
+        bmap = {b.id: b for b in boards}
+        done_cols = {c.id for b in boards for c in self.db.list_columns(b.id) if c.is_done}
+        cards = [t for t in self.db.list_tasks(include_boards=True)
+                 if t.board_id in bmap and not t.done and t.column_id not in done_cols and t.id not in w.PENDING_DELETE]
+        cards = self._filtered(cards, today)
+        groups = [("Просрочено", lambda t: t.deadline is not None and t.deadline < today, "danger"),
+                  ("Сегодня", lambda t: t.deadline == today, "warn"),
+                  ("На этой неделе", lambda t: t.deadline is not None and 0 < (t.deadline - today).days <= 7, None),
+                  ("Позже", lambda t: t.deadline is not None and (t.deadline - today).days > 7, None),
+                  ("Без срока", lambda t: t.deadline is None, None)]
+        # загрузка по доскам — одной строкой
+        load = " · ".join(f"{b.name}: {sum(1 for t in cards if t.board_id == b.id)}" for b in boards)
+        self.ov_box.addWidget(w.label("Открытые карточки — " + load, "secondary", wrap=True))
+        cols = {c.id: c for b in boards for c in self.db.list_columns(b.id)}
+        for name, pred, role in groups:
+            items = sorted((t for t in cards if pred(t)), key=lambda t: (t.deadline or date.max, t.priority, t.id))
+            if not items:
+                continue
+            card = w.Card(f"{name} · {len(items)}")
+            for t in items:
+                row = w.ClickableFrame()
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(4, 6, 4, 6)
+                rl.setSpacing(10)
+                dot = w.label("●")
+                dot.setStyleSheet(f"color: {bmap[t.board_id].color};")
+                rl.addWidget(dot)
+                title = w.label(t.title)
+                title.setTextFormat(Qt.PlainText)
+                if t.priority == logic.PRIORITY_HIGH:
+                    f = title.font(); f.setWeight(f.Weight.DemiBold); title.setFont(f)
+                rl.addWidget(title, 1)
+                where = bmap[t.board_id].name + (f" · {cols[t.column_id].name}" if t.column_id in cols else "")
+                rl.addWidget(w.label(where, "caption"))
+                if t.deadline:
+                    rl.addWidget(w.label(logic.due_text(t.deadline, today), role or "secondary"))
+                row.clicked.connect(lambda tid=t.id: self.card_selected(tid))
+                row.setToolTip("Щелчок — карточка справа; двойной на доске — открыть целиком")
+                card.body.addWidget(row)
+            self.ov_box.addWidget(card)
+        if not cards:
+            self.ov_box.addWidget(w.label("Открытых карточек нет — всё сделано.", "empty"))
+        self.ov_box.addStretch()
+        n = len(cards)
+        over = sum(1 for t in cards if t.deadline and t.deadline < today)
+        self.header.set_subtitle(f"Все доски: {n} {logic.plural(n, 'открытая карточка', 'открытые карточки', 'открытых карточек')}"
+                                 + (f" · {over} просрочено" if over else ""))
+
     # ---- отрисовка ----
     def refresh(self, focus_add: int | None = None, keep_panel: bool = False) -> None:
         boards = self._boards()
-        if self.board_id not in {b.id for b in boards}:
+        if self.board_id not in {b.id for b in boards} and not (self.board_id == ALL_BOARDS and boards):
             self.board_id = boards[0].id if boards else None
         has = self.board_id is not None
         self.split.setVisible(has)
@@ -814,6 +977,12 @@ class BoardsPage(w.Page):
         for b in self.board_group.buttons():
             self.board_group.removeButton(b)
         self.board_strip.clear()
+        if len(boards) > 1:
+            allc = w.chip("Все доски", self.board_id == ALL_BOARDS)
+            allc.setProperty("value", ALL_BOARDS)
+            allc.setToolTip("Открытые карточки всех досок по срокам — видно общую загрузку")
+            self.board_group.addButton(allc)
+            self.board_strip.addWidget(allc)
         for b in boards:
             n = sum(1 for t in self.db.list_tasks(board_id=b.id) if not t.done and not t.archived)
             c = w.chip(f"{b.name} {n}" if n else b.name, b.id == self.board_id)
@@ -826,14 +995,24 @@ class BoardsPage(w.Page):
 
         hscroll = self.kanban.horizontalScrollBar().value()
         w.clear_layout(self.cols_row)
+        self._fill_filters()
         if not has:
             self.header.set_subtitle("")
             return
+        self.board_more.setVisible(self.board_id != ALL_BOARDS)
+        if self.board_id == ALL_BOARDS:
+            self.left_stack.setCurrentWidget(self.overview)
+            self._fill_overview(boards)
+            self.notes.load()
+            self.card_panel.show_task(getattr(self, "selected", None) if self.db.get_task(getattr(self, "selected", None) or 0) else None)
+            return
+        self.left_stack.setCurrentWidget(self.kanban)
         today = date.today()
         self.columns = self.db.list_columns(self.board_id)
         subs = self.db.all_subtasks()
         topics = {t.id: t for t in self.db.list_topics()}
-        tasks = self.db.list_tasks(board_id=self.board_id)
+        all_cards = [t for t in self.db.list_tasks(board_id=self.board_id) if t.id not in w.PENDING_DELETE]
+        tasks = self._filtered(all_cards, today)
         by_col: dict[int, list] = {}
         first = self.columns[0].id if self.columns else None
         for t in tasks:

@@ -36,6 +36,14 @@ class Task:
     board_id: int | None = None      # задача-карточка доски (канбан); в обычном списке задач её нет
     column_id: int | None = None
     position: float = 0.0
+    repeat: str | None = None        # правило повтора, см. next_due(): "d:1", "w:1:0,2", "m:1:15", "m:1:-1", "y:1"
+    labels: str = ""                 # метки через запятую: «срочно,ждёт ответа»
+    goal_id: int | None = None       # шаг к цели: выполненная задача двигает прогресс цели
+    note_id: int | None = None       # связанная заметка
+
+    @property
+    def label_list(self) -> list[str]:
+        return parse_labels(self.labels)
 
 
 @dataclass
@@ -274,15 +282,18 @@ def money_progress(goal: Goal, saved: float) -> float:
     return max(0.0, min(1.0, saved / goal.target_amount))
 
 
-def goal_progress(goal: Goal, steps: list[GoalStep], saved: float = 0.0) -> float:
+def goal_progress(goal: Goal, steps: list[GoalStep], saved: float = 0.0,
+                  linked: Iterable[bool] = ()) -> float:
     """Доля 0..1.
 
-    Обычная цель — по выполненным шагам. Финансовая — по накопленной сумме, а если у неё
-    есть шаги, то поровну: половина — деньги, половина — шаги. Достигнутая цель — всегда 1.
+    Обычная цель — по выполненным шагам (и привязанным к ней задачам — linked: выполнена ли каждая).
+    Финансовая — по накопленной сумме, а если у неё есть шаги, то поровну: половина — деньги,
+    половина — шаги. Достигнутая цель — всегда 1.
     """
     if goal.done:
         return 1.0
-    steps_part = sum(1 for s in steps if s.done) / len(steps) if steps else None
+    marks = [s.done for s in steps] + list(linked)
+    steps_part = sum(1 for d in marks if d) / len(marks) if marks else None
     if goal.financial and goal.target_amount > 0:
         money = money_progress(goal, saved)
         return money if steps_part is None else (money + steps_part) / 2
@@ -420,6 +431,8 @@ class QuickTask:
     topic_id: int | None = None
     priority: int = PRIORITY_MEDIUM
     hints: list[str] = field(default_factory=list)   # что распознано — для подсказки под строкой
+    repeat: str | None = None
+    labels: list[str] = field(default_factory=list)
 
 
 def _parse_date(word: str, today: date) -> date | None:
@@ -458,7 +471,16 @@ def parse_quick_task(text: str, topics: Iterable[Topic], today: date,
         raw = words[i]
         low = raw.lower().strip(",.")
         nxt = words[i + 1].lower().strip(",.") if i + 1 < len(words) else ""
-        if raw in ("!", "!!", "!!!"):
+        rep_rule, used = _repeat_phrase(low, nxt)
+        if rep_rule and q.repeat is None:
+            q.repeat = rep_rule
+            if used == 2:
+                i += 1
+            if rep_rule.startswith("w:1:") and q.deadline is None and "," not in rep_rule:
+                q.deadline = _next_weekday(today, int(rep_rule.split(":")[2]))
+        elif raw.startswith("@") and len(raw) > 1:
+            q.labels.append(raw[1:].strip(",."))
+        elif raw in ("!", "!!", "!!!"):
             q.priority = PRIORITY_HIGH
         elif low in _REL and q.deadline is None:
             q.deadline = today + timedelta(days=_REL[low])
@@ -482,6 +504,8 @@ def parse_quick_task(text: str, topics: Iterable[Topic], today: date,
             keep.append(raw)
         i += 1
     q.title = " ".join(keep).strip()
+    if q.repeat and q.deadline is None:
+        q.deadline = today
     if q.deadline is not None:
         d = q.deadline
         q.hints.append(f"срок: {_WD_SHORT[d.weekday()]}, {d.day} {_MONTHS_GEN[d.month - 1]}"
@@ -490,11 +514,137 @@ def parse_quick_task(text: str, topics: Iterable[Topic], today: date,
         t = next((t for t in topics if t.id == q.topic_id), None)
         if t:
             q.hints.append("тема: " + t.name)
+    if q.repeat:
+        q.hints.append("повтор: " + repeat_text(q.repeat).lower())
+    if q.labels:
+        q.hints.append("метки: " + ", ".join(q.labels))
     if q.priority == PRIORITY_HIGH:
         q.hints.append("высокий приоритет")
     return q
 
 
+_WD_ACC = {"понедельник": 0, "вторник": 1, "среду": 2, "четверг": 3, "пятницу": 4, "субботу": 5,
+           "воскресенье": 6}
+_EVERY_WD = {"каждый": ("понедельник", "вторник", "четверг"), "каждую": ("среду", "пятницу", "субботу"),
+             "каждое": ("воскресенье",)}
+
+
+def _repeat_phrase(w1: str, w2: str) -> tuple[str | None, int]:
+    """«каждый день», «по будням», «еженедельно», «каждую пятницу» → (правило, сколько слов занято)."""
+    single = {"ежедневно": "d:1", "еженедельно": "w:1", "ежемесячно": "m:1", "ежегодно": "y:1"}
+    if w1 in single:
+        return single[w1], 1
+    pairs = {("каждый", "день"): "d:1", ("по", "будням"): "w:1:0,1,2,3,4", ("каждую", "неделю"): "w:1",
+             ("каждый", "месяц"): "m:1", ("каждый", "год"): "y:1"}
+    if (w1, w2) in pairs:
+        return pairs[(w1, w2)], 2
+    if w1 in _EVERY_WD and w2 in _EVERY_WD[w1]:
+        return f"w:1:{_WD_ACC[w2]}", 2
+    return None, 0
+
+
 def _next_weekday(today: date, wd: int) -> date:
     delta = (wd - today.weekday()) % 7
     return today + timedelta(days=delta or 7)
+
+
+
+# ---------------------------------------------------------------- повторяющиеся задачи и метки
+
+REPEAT_CHOICES = [(None, "Не повторять"), ("d:1", "Каждый день"), ("w:1:0,1,2,3,4", "По будням"),
+                  ("w:1", "Каждую неделю"), ("w:2", "Раз в две недели"), ("m:1", "Каждый месяц"),
+                  ("m:1:-1", "В последний день месяца"), ("y:1", "Каждый год")]
+
+
+def _parse_rule(rule: str) -> tuple[str, int, list[int]]:
+    parts = rule.split(":")
+    kind = parts[0]
+    n = max(1, int(parts[1])) if len(parts) > 1 and parts[1].lstrip("-").isdigit() else 1
+    extra = [int(x) for x in parts[2].split(",") if x.strip().lstrip("-").isdigit()] if len(parts) > 2 else []
+    return kind, n, extra
+
+
+def _add_months(d: date, months: int, day: int) -> date:
+    import calendar
+    y, m = divmod(d.month - 1 + months, 12)
+    y, m = d.year + y, m + 1
+    last = calendar.monthrange(y, m)[1]
+    return date(y, m, last if day == -1 or day > last else day)
+
+
+def next_due(rule: str, due: date | None, today: date) -> date:
+    """Следующий срок повторяющейся задачи — первый после прежнего срока и не раньше сегодня.
+
+    d:N — каждые N дней; w:N[:дни] — каждые N недель (дни 0=пн…6=вс, по умолчанию день срока);
+    m:N[:число] — каждые N месяцев (−1 — последний день); y:N — каждые N лет.
+    """
+    kind, n, extra = _parse_rule(rule)
+    base = due or today
+
+    def step(d: date) -> date:
+        if kind == "d":
+            return d + timedelta(days=n)
+        if kind == "w":
+            days = sorted(set(extra)) or [base.weekday()]
+            x = d + timedelta(days=1)
+            for _ in range(7 * n + 7):
+                weeks = ((x - timedelta(days=x.weekday())) - (base - timedelta(days=base.weekday()))).days // 7
+                if x.weekday() in days and weeks % n == 0:
+                    return x
+                x += timedelta(days=1)
+            return d + timedelta(weeks=n)
+        if kind == "m":
+            return _add_months(d, n, extra[0] if extra else base.day)
+        if kind == "y":
+            return _add_months(d, 12 * n, base.day)
+        return d + timedelta(days=1)
+
+    nxt = step(base)
+    guard = 0
+    while nxt < today and guard < 2000:        # давно просрочено — сразу на ближайший будущий срок
+        nxt = step(nxt)
+        guard += 1
+    return nxt
+
+
+def repeat_text(rule: str | None) -> str:
+    if not rule:
+        return "Не повторять"
+    for r, name in REPEAT_CHOICES:
+        if r == rule:
+            return name
+    kind, n, extra = _parse_rule(rule)
+    wd = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    if kind == "d":
+        return f"Каждые {n} {plural(n, 'день', 'дня', 'дней')}" if n > 1 else "Каждый день"
+    if kind == "w":
+        days = ", ".join(wd[d] for d in sorted(set(extra)) if 0 <= d < 7)
+        head = "Каждую неделю" if n == 1 else f"Раз в {n} {plural(n, 'неделю', 'недели', 'недель')}"
+        return head + (f": {days}" if days else "")
+    if kind == "m":
+        head = "Каждый месяц" if n == 1 else f"Раз в {n} {plural(n, 'месяц', 'месяца', 'месяцев')}"
+        return head + (", в последний день" if extra and extra[0] == -1 else f", {extra[0]}-го" if extra else "")
+    if kind == "y":
+        return "Каждый год" if n == 1 else f"Раз в {n} {plural(n, 'год', 'года', 'лет')}"
+    return "Повтор"
+
+
+def parse_labels(text: str) -> list[str]:
+    seen, out = set(), []
+    for part in (text or "").replace(";", ",").split(","):
+        name = part.strip().lstrip("#").strip()
+        if name and name.lower() not in seen:
+            seen.add(name.lower())
+            out.append(name)
+    return out
+
+
+LABEL_COLORS = ["#B42318", "#B45309", "#15803D", "#0F6E6A", "#1D4ED8", "#7E22CE", "#BE185D", "#374151"]
+
+
+def label_color(name: str) -> str:
+    """Цвет метки — один и тот же на всех устройствах (по названию)."""
+    h = 0
+    for ch in name.lower():
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return LABEL_COLORS[h % len(LABEL_COLORS)]

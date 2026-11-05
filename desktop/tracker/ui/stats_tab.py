@@ -88,7 +88,8 @@ class StatsPage(w.Page):
         if active_goals:
             steps = self.db.all_steps()
             saved = self.db.saved_amounts()
-            g_avg = sum(logic.goal_progress(g, steps.get(g.id, []), saved.get(g.id, 0.0))
+            g_avg = sum(logic.goal_progress(g, steps.get(g.id, []), saved.get(g.id, 0.0),
+                                                 self.db.goal_task_flags().get(g.id, []))
                         for g in active_goals) / len(active_goals)
             self.summary.addWidget(self._metric(
                 "Цели в работе", f"{len(active_goals)}", f"средний прогресс {g_avg * 100:.0f}%"))

@@ -7,6 +7,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+from . import logic
 from .logic import Board, BoardColumn, Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
 from .cal import EVENT_COLORS, CalendarInfo, Event
 from . import sync
@@ -256,6 +257,12 @@ class Database:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN column_id INTEGER"
                               " REFERENCES board_columns(id) ON DELETE SET NULL")
             self.conn.execute("ALTER TABLE tasks ADD COLUMN position REAL")
+        if "repeat" not in cols:
+            # повторы, метки, связь с целью и заметкой
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN repeat TEXT")
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN labels TEXT NOT NULL DEFAULT ''")
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN goal_id INTEGER REFERENCES goals(id) ON DELETE SET NULL")
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN note_id INTEGER REFERENCES notes(id) ON DELETE SET NULL")
         ncols = {r[1] for r in self.conn.execute("PRAGMA table_info(notes)")}
         if "board_id" not in ncols:
             self.conn.execute("ALTER TABLE notes ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
@@ -328,19 +335,23 @@ class Database:
     def add_task(self, task: Task) -> int:
         cur = self.conn.execute(
             "INSERT INTO tasks(title, description, deadline, priority, done, completed_on, archived,"
-            " topic_id, board_id, column_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " topic_id, board_id, column_id, position, repeat, labels, goal_id, note_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             self._task_values(task),
         )
         self._commit()
         return cur.lastrowid
 
     def update_task(self, task: Task) -> None:
+        before = self.get_task(task.id) if task.done and task.repeat else None
         self.conn.execute(
             "UPDATE tasks SET title = ?, description = ?, deadline = ?, priority = ?,"
             " done = ?, completed_on = ?, archived = ?, topic_id = ?, board_id = ?, column_id = ?,"
-            " position = ? WHERE id = ?",
+            " position = ?, repeat = ?, labels = ?, goal_id = ?, note_id = ? WHERE id = ?",
             (*self._task_values(task), task.id),
         )
+        if before is not None:
+            self._repeat_if_needed(before, task)
         self._commit()
 
     @staticmethod
@@ -360,6 +371,10 @@ class Database:
             task.board_id,
             task.column_id,
             task.position if task.board_id is not None else None,
+            task.repeat or None,
+            ",".join(logic.parse_labels(task.labels)),
+            task.goal_id,
+            task.note_id,
         )
 
     def delete_task(self, task_id: int) -> None:
@@ -380,10 +395,10 @@ class Database:
             where = " WHERE board_id IS NULL"
         rows = self.conn.execute(
             "SELECT id, title, description, deadline, priority, done, completed_on, archived,"
-            " topic_id, board_id, column_id, position FROM tasks" + where, args
+            " topic_id, board_id, column_id, position, repeat, labels, goal_id, note_id FROM tasks" + where, args
         )
         return [Task(r[0], r[1], r[2], _d(r[3]), r[4], bool(r[5]), _d(r[6]), bool(r[7]), r[8],
-                     r[9], r[10], r[11] or 0.0) for r in rows]
+                     r[9], r[10], r[11] or 0.0, r[12] or None, r[13] or "", r[14], r[15]) for r in rows]
 
     def get_task(self, task_id: int) -> Task | None:
         return next((t for t in self.list_tasks(include_boards=True) if t.id == task_id), None)
@@ -492,7 +507,44 @@ class Database:
         completed = (t.completed_on or date.today()) if done else None
         self.conn.execute("UPDATE tasks SET column_id = ?, position = ?, done = ?, completed_on = ? WHERE id = ?",
                           (column_id, pos, int(done), completed.isoformat() if completed else None, task_id))
+        if done and t.repeat:
+            after = self.get_task(task_id)
+            self._repeat_if_needed(t, after)
         self._commit()
+
+    def _repeat_if_needed(self, before: Task, after: Task) -> int | None:
+        """Повторяющаяся задача отмечена выполненной — она остаётся в истории выполненной,
+        а рядом появляется следующая (со следующим сроком и снятыми галочками подзадач)."""
+        if not after.repeat or not after.done or before.done:
+            return None
+        nxt = logic.next_due(after.repeat, after.deadline, date.today())
+        self.conn.execute("UPDATE tasks SET repeat = NULL WHERE id = ?", (after.id,))
+        column = after.column_id
+        position = after.position
+        if after.board_id is not None:
+            cols = self.list_columns(after.board_id)
+            first = next((c for c in cols if not c.is_done), None)
+            if first is not None:
+                column = first.id
+                position = min((t.position for t in self.cards_in(first.id)), default=1.0) - 1.0
+        new = Task(0, after.title, after.description, nxt, after.priority, False, None, False, after.topic_id,
+                   after.board_id, column, position, after.repeat, after.labels, after.goal_id, after.note_id)
+        cur = self.conn.execute(
+            "INSERT INTO tasks(title, description, deadline, priority, done, completed_on, archived,"
+            " topic_id, board_id, column_id, position, repeat, labels, goal_id, note_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", self._task_values(new))
+        nid = cur.lastrowid
+        for st in self.subtasks(after.id):
+            self.conn.execute("INSERT INTO task_subtasks(task_id, title, position) VALUES (?, ?, ?)",
+                              (nid, st.title, st.position))
+        return nid
+
+    def goal_task_flags(self) -> dict[int, list[bool]]:
+        """Задачи, привязанные к целям: {цель: [выполнена?]} — для прогресса цели."""
+        out: dict[int, list[bool]] = {}
+        for gid, done in self.conn.execute("SELECT goal_id, done FROM tasks WHERE goal_id IS NOT NULL AND archived = 0"):
+            out.setdefault(gid, []).append(bool(done))
+        return out
 
     def complete_task(self, task_id: int, done: bool = True) -> None:
         """Отметить выполненной. Карточка доски при этом переезжает в колонку «Готово» (или обратно)."""

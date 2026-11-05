@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 
 from .. import logic
 from ..db import Database
+from . import icons
 from . import widgets as w
 from .theme import theme, topic_color
 
@@ -182,8 +183,9 @@ def apply_subtasks(db: Database, task_id: int, entries: list[dict]) -> None:
 
 class TaskDialog(QDialog):
     def __init__(self, parent: QWidget, topics: list[logic.Topic], task: logic.Task | None = None,
-                 default_topic: int | None = None, subtasks: list | None = None):
+                 default_topic: int | None = None, subtasks: list | None = None, db: Database | None = None):
         super().__init__(parent)
+        self.db = db
         self.setWindowTitle("Задача" if task else "Новая задача")
         self.setMinimumWidth(460)
         self.task = task or logic.Task(0, "", topic_id=default_topic)
@@ -228,12 +230,59 @@ class TaskDialog(QDialog):
         self.done_box = QCheckBox("Выполнена")
         self.done_box.setChecked(self.task.done)
 
+        # повтор
+        self.repeat = QComboBox()
+        self.repeat.setAccessibleName("Повтор")
+        for rule, name in logic.REPEAT_CHOICES:
+            self.repeat.addItem(name, rule)
+        if self.task.repeat and self.repeat.findData(self.task.repeat) < 0:
+            self.repeat.addItem(logic.repeat_text(self.task.repeat), self.task.repeat)
+        self.repeat.setCurrentIndex(max(0, self.repeat.findData(self.task.repeat)))
+        self.repeat.setToolTip("Отмеченная выполненной повторяющаяся задача остаётся в истории,\n"
+                               "а рядом сразу появляется следующая — со следующим сроком.")
+        # метки
+        self.labels = QLineEdit(", ".join(self.task.label_list))
+        self.labels.setPlaceholderText("через запятую: срочно, ждёт ответа")
+        self.labels.setAccessibleName("Метки")
+        if db is not None:
+            from PySide6.QtWidgets import QCompleter
+            known = sorted({l for t in db.list_tasks(include_boards=True) for l in t.label_list}, key=str.lower)
+            if known:
+                comp = QCompleter(known, self.labels)
+                comp.setCaseSensitivity(Qt.CaseInsensitive)
+                self.labels.setCompleter(comp)
+        # цель и заметка
+        self.goal = QComboBox()
+        self.goal.setAccessibleName("Цель")
+        self.goal.addItem("Не связана с целью", None)
+        self.note = QComboBox()
+        self.note.setAccessibleName("Заметка")
+        self.note.addItem("Без заметки", None)
+        if db is not None:
+            for g in logic.active_goals(db.list_goals()):
+                self.goal.addItem(icons.icon("goals", theme["text2"]), g.title, g.id)
+            cur_goal = db.get_goal(self.task.goal_id) if self.task.goal_id else None
+            if cur_goal and self.goal.findData(cur_goal.id) < 0:
+                self.goal.addItem(cur_goal.title, cur_goal.id)
+            notes = logic.sort_notes(db.list_notes() + (db.list_notes(board_id=self.task.board_id)
+                                                          if self.task.board_id else []))
+            for n in notes:
+                self.note.addItem(icons.icon("notes", theme["text2"]), n.display_title, n.id)
+        self.goal.setCurrentIndex(max(0, self.goal.findData(self.task.goal_id)))
+        self.note.setCurrentIndex(max(0, self.note.findData(self.task.note_id)))
+        self.goal.setToolTip("Выполненная задача засчитывается в прогресс цели как шаг")
+
         form.addRow("Название", self.title_edit)
         form.addRow("", self.error)
         form.addRow("Описание", self.desc_edit)
         form.addRow("Тема", self.topic)
         form.addRow("Срок", deadline_row)
         form.addRow("Приоритет", self.priority)
+        form.addRow("Повтор", self.repeat)
+        form.addRow("Метки", self.labels)
+        if db is not None:
+            form.addRow("Цель", self.goal)
+            form.addRow("Заметка", self.note)
         self.subtasks = SubtaskList([{"id": x.id, "title": x.title, "done": x.done} for x in (subtasks or [])])
         form.addRow("Подзадачи", self.subtasks)
         form.addRow("", self.done_box)
@@ -270,6 +319,10 @@ class TaskDialog(QDialog):
             board_id=self.task.board_id,
             column_id=self.task.column_id,
             position=self.task.position,
+            repeat=self.repeat.currentData(),
+            labels=", ".join(logic.parse_labels(self.labels.text())),
+            goal_id=self.goal.currentData() if self.db is not None else self.task.goal_id,
+            note_id=self.note.currentData() if self.db is not None else self.task.note_id,
         )
 
 
@@ -439,6 +492,7 @@ class TasksPage(w.Page):
     def __init__(self, db: Database, navigate=None):
         super().__init__("Задачи", scroll=False)
         self.db = db
+        self.navigate = navigate
         self.status = logic.FILTER_ACTIVE
         try:
             self.topic_filter = int(db.get_pref("tasks_topic", str(logic.TOPIC_ALL)))
@@ -479,7 +533,8 @@ class TasksPage(w.Page):
         self.quick.setPlaceholderText("Быстро добавить задачу: «Купить молоко завтра #дом !»")
         self.quick.setAccessibleName("Быстрое добавление задачи")
         self.quick.setToolTip("Срок: сегодня, завтра, послезавтра, день недели («в пятницу», «пт») или дата «12.11».\n"
-                              "Тема: #название (можно начало). Высокий приоритет: «!».")
+                              "Повтор: «каждый день», «по будням», «каждый понедельник», «ежемесячно».\n"
+                              "Тема: #название (можно начало). Метка: @метка. Высокий приоритет: «!».")
         self.quick.textChanged.connect(self._quick_preview)
         self.quick.returnPressed.connect(self._quick_add)
         for seq in ("Ctrl+Return", "Ctrl+Enter"):
@@ -572,6 +627,10 @@ class TasksPage(w.Page):
         self.d_subs = SubtaskList(compact=True)
         self.d_subs.changed.connect(self._detail_subtasks_changed)
         dl.addWidget(self.d_subs)
+        self.d_note = w.button("", "ghost", "notes", "Открыть связанную заметку")
+        self.d_note.clicked.connect(self._open_note)
+        self.d_note.hide()
+        dl.addWidget(self.d_note, 0, Qt.AlignLeft)
         self.d_open = w.button("Изменить задачу…", "ghost", "edit")
         self.d_open.clicked.connect(self.edit_selected)
         dl.addWidget(self.d_open, 0, Qt.AlignLeft)
@@ -675,7 +734,7 @@ class TasksPage(w.Page):
 
     def new_item(self) -> None:
         default = self.topic_filter if self.topic_filter > 0 else None
-        dlg = TaskDialog(self, self.db.list_topics(), default_topic=default)
+        dlg = TaskDialog(self, self.db.list_topics(), default_topic=default, db=self.db)
         if dlg.exec() == QDialog.Accepted:
             subs = dlg.result_subtasks()
             tid = self.db.add_task(dlg.result_task())
@@ -690,7 +749,7 @@ class TasksPage(w.Page):
         task = self.db.get_task(task_id)
         if task is None:
             return
-        dlg = TaskDialog(self, self.db.list_topics(), task, subtasks=self.db.subtasks(task_id))
+        dlg = TaskDialog(self, self.db.list_topics(), task, subtasks=self.db.subtasks(task_id), db=self.db)
         if dlg.exec() == QDialog.Accepted:
             subs = dlg.result_subtasks()
             self.db.update_task(dlg.result_task())
@@ -712,6 +771,11 @@ class TasksPage(w.Page):
             self.done_btn.setText("Вернуть в работу" if task.done else "Выполнено")
             self.archive_action.setText("Вернуть из архива" if task.archived else "Отправить в архив")
 
+    def _open_note(self) -> None:
+        n = getattr(self, "_note_target", None)
+        if n is not None and self.navigate:
+            self.navigate("boards", board_id=n.board_id) if n.board_id else self.navigate("notes", note_id=n.id)
+
     # ---- быстрое добавление ----
     def _quick_parse(self):
         default = self.topic_filter if self.topic_filter > 0 else None
@@ -729,7 +793,8 @@ class TasksPage(w.Page):
         if not q.title:
             self.quick_hint.setText("Напишите, что нужно сделать")
             return
-        tid = self.db.add_task(logic.Task(0, q.title, deadline=q.deadline, priority=q.priority, topic_id=q.topic_id))
+        tid = self.db.add_task(logic.Task(0, q.title, deadline=q.deadline, priority=q.priority, topic_id=q.topic_id,
+                                          repeat=q.repeat, labels=", ".join(q.labels)))
         self.quick.clear()
         if self.status not in (logic.FILTER_ACTIVE, logic.FILTER_ALL):
             self.status = logic.FILTER_ACTIVE
@@ -794,6 +859,7 @@ class TasksPage(w.Page):
             self.d_title.setText("Выберите задачу")
             self.d_meta.setText("Здесь появятся её описание и подзадачи — их можно отмечать прямо отсюда.")
             self.d_desc.hide()
+            self.d_note.hide()
             return
         today = date.today()
         topic = next((t for t in self.db.list_topics() if t.id == task.topic_id), None)
@@ -805,9 +871,21 @@ class TasksPage(w.Page):
             meta.append(f"срок {w.human_date(task.deadline, today)}" +
                         ("" if task.done else f" · {logic.due_text(task.deadline, today)}"))
         meta.append(f"приоритет: {logic.PRIORITY_NAMES[task.priority].lower()}")
+        if task.repeat:
+            meta.append("↻ " + logic.repeat_text(task.repeat).lower())
+        if task.label_list:
+            meta.append(" ".join("#" + l for l in task.label_list))
+        goal = self.db.get_goal(task.goal_id) if task.goal_id else None
+        if goal:
+            meta.append(f"шаг к цели «{goal.title}»")
         if task.done:
             meta.append("выполнена")
         self.d_meta.setText(" · ".join(meta))
+        note = self.db.get_note(task.note_id) if task.note_id else None
+        self.d_note.setVisible(note is not None and self.navigate is not None)
+        if note:
+            self.d_note.setText(f"Заметка: {note.display_title}")
+            self._note_target = note
         self.d_desc.setText(task.description)
         self.d_desc.setVisible(bool(task.description))
         if self._detail_task_id != task.id or not self.d_subs.list.hasFocus():
@@ -871,16 +949,7 @@ class TasksPage(w.Page):
         task = self._selected()
         if task is None:
             return
-        box = QMessageBox(QMessageBox.Warning, "Удалить задачу",
-                          f"Удалить задачу «{task.title}» навсегда?", parent=self)
-        box.setInformativeText("Это действие нельзя отменить. Чтобы убрать задачу из списка, "
-                               "отправьте её в архив.")
-        yes = box.addButton("Удалить", QMessageBox.DestructiveRole)
-        box.addButton("Отмена", QMessageBox.RejectRole)
-        box.exec()
-        if box.clickedButton() is yes:
-            self.db.delete_task(task.id)
-            self.refresh()
+        w.delete_task_with_undo(self, self.db, task.id, task.title)
 
     # ---- отрисовка ----
 
@@ -889,7 +958,7 @@ class TasksPage(w.Page):
         selected = self._selected()
         topics = self.db.list_topics()
         topic_by_id = {t.id: t for t in topics}
-        all_tasks = self.db.list_tasks()
+        all_tasks = [t for t in self.db.list_tasks() if t.id not in w.PENDING_DELETE]
         by_status = logic.filter_tasks(all_tasks, self.status)
         counts = {logic.TOPIC_ALL: len(by_status), logic.TOPIC_NONE: sum(1 for t in by_status if t.topic_id is None)}
         for t in by_status:
@@ -923,7 +992,11 @@ class TasksPage(w.Page):
                     due += f" · {logic.due_text(task.deadline, today)}"
             else:
                 due = "—"
+            if task.repeat:
+                due += "  ↻"
             title = task.title + ("  (выполнена)" if task.done else "")
+            if task.label_list:
+                title += "   " + "  ".join("#" + l for l in task.label_list)
             st = subs.get(task.id)
             steps = f"{sum(1 for x in st if x.done)}/{len(st)}" if st else ""
             values = [title, steps, topic.name if topic else "—", due, logic.PRIORITY_NAMES[task.priority]]

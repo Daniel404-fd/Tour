@@ -429,3 +429,32 @@ def confirm(parent, title: str, text: str, info: str = "", ok: str = "Удали
     box.setEscapeButton(no)
     box.exec()
     return box.clickedButton() is yes
+
+
+# ---------------------------------------------------------------- удаление с «Отменить»
+
+PENDING_DELETE: set[int] = set()     # задачи, удаление которых ещё можно отменить (их не показываем)
+
+
+def delete_task_with_undo(page, db, task_id: int, title: str) -> None:
+    """Удалить задачу/карточку без вопроса, но с кнопкой «Отменить» внизу окна (как в Gmail, Notion).
+    Пока висит подсказка, задача только спрятана; по-настоящему удаляется через несколько секунд."""
+    win = page.window()
+    if not hasattr(win, "show_undo"):
+        if confirm(page, "Удалить", f"Удалить «{title}»?"):
+            db.delete_task(task_id)
+        page.refresh()
+        return
+    PENDING_DELETE.add(task_id)
+
+    def commit():
+        if task_id in PENDING_DELETE:
+            PENDING_DELETE.discard(task_id)
+            if db.get_task(task_id) is not None:
+                db.delete_task(task_id)
+
+    def cancel():
+        PENDING_DELETE.discard(task_id)
+        page.refresh()
+    win.show_undo(f"Удалено: {title}", commit, cancel)
+    page.refresh()

@@ -186,6 +186,7 @@ class GoalsPage(w.Page):
     def __init__(self, db: Database, navigate=None):
         super().__init__("Цели", "Долгосрочные цели и шаги к ним", scroll=False)
         self.db = db
+        self.navigate = navigate
         self.filter = "active"
         self.selected_id: int | None = None
 
@@ -324,7 +325,7 @@ class GoalsPage(w.Page):
         f = title.font(); f.setWeight(f.Weight.DemiBold); title.setFont(f)
         lay.addWidget(title)
         saved = self.saved.get(g.id, 0.0)
-        prog = logic.goal_progress(g, steps, saved)
+        prog = logic.goal_progress(g, steps, saved, self.db.goal_task_flags().get(g.id, []))
         lay.addWidget(progress_bar(prog))
         done = sum(1 for s in steps if s.done)
         info = f"{round(prog * 100)}%"
@@ -370,7 +371,7 @@ class GoalsPage(w.Page):
             card.body.addWidget(desc)
 
         saved = self.saved.get(g.id, 0.0)
-        prog = logic.goal_progress(g, steps, saved)
+        prog = logic.goal_progress(g, steps, saved, self.db.goal_task_flags().get(g.id, []))
         prow = QHBoxLayout()
         prow.addWidget(progress_bar(prog), 1)
         prow.addWidget(w.label(f"{round(prog * 100)}%", "accent"))
@@ -447,6 +448,49 @@ class GoalsPage(w.Page):
             add_row.addWidget(field, 1)
             add_row.addWidget(add)
             card.body.addLayout(add_row)
+        # задачи и карточки досок, привязанные к цели, — тоже шаги: выполненные двигают прогресс
+        linked = [t for t in self.db.list_tasks(include_boards=True) if t.goal_id == g.id and not t.archived]
+        card.body.addSpacing(6)
+        ldone = sum(1 for t in linked if t.done)
+        card.body.addWidget(w.label(f"Задачи к цели · {ldone} из {len(linked)}" if linked else "Задачи к цели", "section"))
+        if not linked:
+            card.body.addWidget(w.label("Привяжите задачу или карточку доски к цели (поле «Цель» в окне задачи) — "
+                                        "выполненные задачи засчитываются в прогресс.", "secondary", wrap=True))
+        boards = {b.id: b for b in self.db.list_boards(include_archived=True)}
+        for t in sorted(linked, key=lambda x: (x.done, x.deadline or date.max)):
+            row = w.ClickableFrame()
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(4, 4, 4, 4)
+            mark = "✓ " if t.done else "○ "
+            lab = w.label(mark + t.title, "secondary" if t.done else None)
+            lab.setTextFormat(Qt.PlainText)
+            rl.addWidget(lab, 1)
+            where = boards[t.board_id].name if t.board_id in boards else "Задачи"
+            extra = f"{where}" + (f" · {logic.due_text(t.deadline, today)}" if t.deadline and not t.done else "")
+            rl.addWidget(w.label(extra, "caption"))
+            row.setToolTip("Открыть")
+            if self.navigate:
+                row.clicked.connect(lambda tid=t.id, bid=t.board_id: self.navigate("boards" if bid else "tasks", task_id=tid))
+            card.body.addWidget(row)
+        if not g.archived and not g.done:
+            trow = QHBoxLayout()
+            tfield = QLineEdit()
+            tfield.setPlaceholderText("Новая задача к цели: «Записаться на курс в пятницу»")
+            tadd = w.button("Добавить задачу", None, "plus")
+
+            def add_task():
+                q = logic.parse_quick_task(tfield.text(), self.db.list_topics(), today)
+                if q.title:
+                    self.db.add_task(logic.Task(0, q.title, deadline=q.deadline, priority=q.priority,
+                                                topic_id=q.topic_id, repeat=q.repeat, labels=", ".join(q.labels),
+                                                goal_id=g.id))
+                    self.refresh()
+            tfield.returnPressed.connect(add_task)
+            tadd.clicked.connect(add_task)
+            trow.addWidget(tfield, 1)
+            trow.addWidget(tadd)
+            card.body.addLayout(trow)
+
         if g.created_on:
             card.body.addSpacing(6)
             card.body.addWidget(w.label(f"Цель поставлена {w.human_date(g.created_on, today)}",
