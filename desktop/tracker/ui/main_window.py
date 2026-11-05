@@ -91,7 +91,7 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setObjectName("mainSplit")
         self.splitter.setHandleWidth(1)
-        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setChildrenCollapsible(True)
 
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("sidebar")
@@ -129,6 +129,7 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(self.stack)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
+        self.splitter.setCollapsible(1, False)
         self.setCentralWidget(self.splitter)
         self._fade = None
         try:
@@ -166,6 +167,8 @@ class MainWindow(QMainWindow):
             self.sidebar.item(i).setText("" if c else title)
             self.sidebar.item(i).setTextAlignment(Qt.AlignCenter if c else Qt.AlignLeft | Qt.AlignVCenter)
         self.sidebar.setProperty("collapsed", "true" if c else "false")
+        # развёрнутая панель не бывает уже SIDEBAR_MIN — иначе подписи обрезаются («Гл», «Тре»)
+        self.sidebar_panel.setMinimumWidth(SIDEBAR_ICONS if c else SIDEBAR_MIN)
         theme_repolish(self.sidebar)
         self.app_title.setVisible(not c)
         self.collapse_btn.setIcon(icons.icon("chevrons-right" if c else "chevrons-left", theme["sidebar_icon"]))
@@ -178,6 +181,8 @@ class MainWindow(QMainWindow):
         end = SIDEBAR_ICONS if self._collapsed else self._sidebar_w
         if not self._collapsed:
             self._apply_sidebar_mode()          # подписи появляются сразу, панель плавно раскрывается
+        else:
+            self.sidebar_panel.setMinimumWidth(SIDEBAR_ICONS)   # чтобы панель могла плавно сузиться
         anim = QVariantAnimation(self)
         anim.setStartValue(start)
         anim.setEndValue(end)
@@ -191,20 +196,22 @@ class MainWindow(QMainWindow):
         self._save_sidebar()
 
     def _sidebar_dragged(self, pos: int, _index: int) -> None:
-        if pos < (SIDEBAR_ICONS + SIDEBAR_MIN) // 2 + 20:
-            if not self._collapsed:            # протянули почти до края — сворачиваем до иконок
-                self._collapsed = True
-                self._apply_sidebar_mode()
-            total = sum(self.splitter.sizes())
-            self.splitter.setSizes([SIDEBAR_ICONS, total - SIDEBAR_ICONS])
-        else:
-            if self._collapsed:
+        total = sum(self.splitter.sizes())
+        if self._collapsed:
+            if pos > SIDEBAR_ICONS + 50:          # вытянули из свёрнутой — разворачиваем
                 self._collapsed = False
                 self._apply_sidebar_mode()
+                self._sidebar_w = max(SIDEBAR_MIN, min(SIDEBAR_MAX, pos))
+                self.splitter.setSizes([self._sidebar_w, total - self._sidebar_w])
+            else:
+                self.splitter.setSizes([SIDEBAR_ICONS, total - SIDEBAR_ICONS])
+        elif pos <= SIDEBAR_MIN - 10 or self.splitter.sizes()[0] == 0:
+            # протянули к краю (Qt «схлопнул» панель) — оставляем полосу иконок
+            self._collapsed = True
+            self._apply_sidebar_mode()
+            self.splitter.setSizes([SIDEBAR_ICONS, total - SIDEBAR_ICONS])
+        else:
             self._sidebar_w = max(SIDEBAR_MIN, min(SIDEBAR_MAX, pos))
-            if pos < SIDEBAR_MIN:
-                total = sum(self.splitter.sizes())
-                self.splitter.setSizes([SIDEBAR_MIN, total - SIDEBAR_MIN])
         self._save_sidebar()
 
     def _save_sidebar(self) -> None:

@@ -154,6 +154,26 @@ class SettingsPage(w.Page):
                 {**cfg, "sidebar": {**sb, "dim": dim.value() / 100}}))
             card.body.addLayout(_row(w.label("Затемнение", "secondary"), dim))
 
+        # шрифт и размер текста
+        fc = QComboBox()
+        fc.setAccessibleName("Шрифт")
+        fc.addItem("Стандартный", None)
+        from PySide6.QtGui import QFont as _QF
+        for fam in theme_mod.available_fonts():
+            fc.addItem(fam, fam)
+            fc.setItemData(fc.count() - 1, _QF(fam, 10), Qt.FontRole)    # в списке каждый шрифт виден «вживую»
+        fc.setCurrentIndex(max(0, fc.findData(cfg.get("font"))))
+        fc.setMinimumWidth(190)
+        fc.currentIndexChanged.connect(lambda _i: self._set_appearance({**cfg, "font": fc.currentData()}))
+        sz = QComboBox()
+        sz.setAccessibleName("Размер текста")
+        for v, name in theme_mod.SIZE_CHOICES:
+            sz.addItem(name, v)
+        sz.setCurrentIndex(max(0, sz.findData(int(cfg.get("font_size") or 10))))
+        sz.currentIndexChanged.connect(lambda _i: self._set_appearance(
+            {**cfg, "font_size": None if sz.currentData() == 10 else sz.currentData()}))
+        card.body.addLayout(_row(w.label("Шрифт", "secondary"), fc, w.label("Размер", "secondary"), sz))
+
         # тема
         tm = QComboBox()
         for key, name in (("system", "Как в Windows"), ("light", "Светлая"), ("dark", "Тёмная")):

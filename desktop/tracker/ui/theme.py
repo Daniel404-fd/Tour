@@ -28,7 +28,7 @@ LIGHT = {
     "accent_soft": "#E8E7FB", "accent_on_soft": "#2E2795",
     "teal": "#0F6E6A", "teal_hover": "#0C5B57", "teal_text": "#FFFFFF",
     "teal_soft": "#E1F0EE", "teal_on_soft": "#0B4F4C", "link": "#0F6E6A",
-    "danger": "#B42318", "danger_soft": "#FDECEA",
+    "danger": "#B42318", "danger_soft": "#FDECEA", "danger_on": "#FFFFFF",
     "warn": "#8A5A00", "warn_soft": "#FFF3D6",
     "empty": "#E6E4DE", "selection": "#DDEFEC", "tip": "#1A1C1E", "tip_text": "#FFFFFF",
     "chunk_bg": "#ECEAE4", "today_bg": "#E7F3F2", "now": "#D93025",
@@ -45,7 +45,7 @@ DARK = {
     "accent_soft": "#2B2950", "accent_on_soft": "#CFCCFF",
     "teal": "#0E4F4C", "teal_hover": "#12605C", "teal_text": "#FFFFFF",
     "teal_soft": "#173634", "teal_on_soft": "#8EDBD4", "link": "#5FD1C9",
-    "danger": "#FF8A80", "danger_soft": "#3D2220",
+    "danger": "#FF8A80", "danger_soft": "#3D2220", "danger_on": "#3A0B07",
     "warn": "#F2C46D", "warn_soft": "#3A2F17",
     "empty": "#2E3237", "selection": "#1F3B39", "tip": "#ECEDEE", "tip_text": "#1A1C1E",
     "chunk_bg": "#2A2E33", "today_bg": "#17302E", "now": "#FF6B5E",
@@ -222,7 +222,7 @@ def _palette(t: dict) -> QPalette:
 
 def _qss(t: dict) -> str:
     return f"""
-    QWidget {{ font-family: "{FONT_FAMILY}"; font-size: {BASE_PT}pt; color: {t['text']}; }}
+    QWidget {{ font-family: "{FONT_FAMILY}"; font-size: 10pt; color: {t['text']}; }}
     QMainWindow, QDialog {{ background: {t['bg']}; }}
     QToolTip {{ background: {t['tip']}; color: {t['tip_text']}; border: none; padding: 5px 8px;
                 border-radius: 6px; }}
@@ -382,7 +382,13 @@ def _qss(t: dict) -> str:
     QMenu::item {{ padding: 6px 22px; border-radius: 5px; }}
     QMenu::item:selected {{ background: {t['hover']}; color: {t['text']}; }}
     QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 6px; }}
+    QMessageBox {{ background: {t['surface']}; }}
     QMessageBox QLabel {{ background: transparent; }}
+    QMessageBox QLabel#qt_msgbox_label {{ font-size: 11pt; font-weight: 600; min-width: 300px; padding: 6px 4px 2px 4px; }}
+    QMessageBox QLabel#qt_msgbox_informativelabel {{ color: {t['text2']}; padding: 0 4px 8px 4px; }}
+    QPushButton[kind="dangerSolid"] {{ background: {t['danger']}; color: {t['danger_on']}; border: 1px solid {t['danger']};
+                                       font-weight: 600; }}
+    QPushButton[kind="dangerSolid"]:hover {{ background: {t['danger']}; border-color: {t['text']}; }}
     """
 
 
@@ -402,9 +408,31 @@ def _arrow_file(color: str, name: str = "chevron-down") -> str:
     return path.as_posix()
 
 
+# шрифты на выбор в настройках (показываются только установленные в системе)
+FONT_CHOICES = ["Segoe UI", "Inter", "Calibri", "Arial", "Verdana", "Tahoma", "Trebuchet MS", "Bahnschrift",
+                "Georgia", "Cambria", "Times New Roman", "Consolas", "JetBrains Mono", "Roboto", "Open Sans",
+                "PT Sans", "PT Serif", "Montserrat", "DejaVu Sans"]
+SIZE_CHOICES = [(9, "Мелкий"), (10, "Обычный"), (11, "Крупнее"), (12, "Крупный"), (13, "Очень крупный")]
+
+
+def available_fonts() -> list[str]:
+    have = set(QFontDatabase.families())
+    return [f for f in FONT_CHOICES if f in have]
+
+
+def _scale_pt(qss: str, ratio: float) -> str:
+    """Все размеры в pt — пропорционально выбранному размеру текста."""
+    import re
+    if abs(ratio - 1) < 1e-6:
+        return qss
+    return re.sub(r"(\d+(?:\.\d+)?)pt", lambda m: f"{float(m.group(1)) * ratio:.1f}pt", qss)
+
+
 def apply_theme(app: QApplication) -> None:
-    global FONT_FAMILY
-    FONT_FAMILY = _pick_font()
+    global FONT_FAMILY, BASE_PT
+    chosen = theme.custom.get("font")
+    FONT_FAMILY = chosen if chosen and chosen in set(QFontDatabase.families()) else _pick_font()
+    BASE_PT = int(theme.custom.get("font_size") or 10)
     mode = theme.custom.get("mode", "system")
     theme.dark = _system_is_dark() if mode == "system" else mode == "dark"
     theme.t = derive(DARK if theme.dark else LIGHT, theme.dark, theme.custom)
@@ -416,7 +444,7 @@ def apply_theme(app: QApplication) -> None:
     app.setStyle(QStyleFactory.create("Fusion"))
     app.setPalette(_palette(theme.t))
     app.setFont(QFont(FONT_FAMILY, BASE_PT))
-    app.setStyleSheet(_qss(theme.t))
+    app.setStyleSheet(_scale_pt(_qss(theme.t), BASE_PT / 10))
     theme.changed.emit()
 
 
@@ -428,6 +456,34 @@ class _DialogFixer(QObject):
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
         from PySide6.QtWidgets import QDialog, QMessageBox, QPushButton
+        if event.type() == QEvent.Show and isinstance(obj, QMessageBox) and not obj.property("_styled"):
+            # окна-вопросы в стиле программы: без системной синей иконки, понятные кнопки,
+            # «Удалить» — красная, «Отмена» — спокойная
+            obj.setProperty("_styled", True)
+            if obj.icon() in (QMessageBox.Question, QMessageBox.Warning, QMessageBox.Information):
+                obj.setIcon(QMessageBox.NoIcon)
+            names = {QMessageBox.Yes: "Да", QMessageBox.No: "Отмена", QMessageBox.Ok: "Понятно",
+                     QMessageBox.Cancel: "Отмена"}
+            for b in obj.buttons():
+                std = obj.standardButton(b)
+                if std in names and b.text().replace("&", "") in ("Да", "Нет", "OK", "Yes", "No", "Cancel", "Отмена"):
+                    b.setText(names[std])
+                role = obj.buttonRole(b)
+                title = obj.windowTitle().lower()
+                destructive = role == QMessageBox.DestructiveRole or (
+                    std == QMessageBox.Yes and any(x in title for x in ("удал", "отключ", "заменить")))
+                if destructive:
+                    b.setProperty("kind", "dangerSolid")
+                    if std == QMessageBox.Yes and "удал" in title:
+                        b.setText("Удалить")
+                elif role in (QMessageBox.AcceptRole, QMessageBox.YesRole) or std in (QMessageBox.Ok, QMessageBox.Yes):
+                    b.setProperty("kind", "primary")
+                b.setMinimumWidth(96)
+                b.setCursor(Qt.PointingHandCursor)
+                repolish(b)
+            safe = obj.button(QMessageBox.No) or obj.button(QMessageBox.Cancel)
+            if safe is not None and any(b.property("kind") == "dangerSolid" for b in obj.buttons()):
+                obj.setDefaultButton(safe)      # Enter не удаляет случайно
         if event.type() == QEvent.Show and isinstance(obj, QDialog) and not isinstance(obj, QMessageBox):
             buttons = obj.findChildren(QPushButton)
             primary = [b for b in buttons if b.property("kind") == "primary"]

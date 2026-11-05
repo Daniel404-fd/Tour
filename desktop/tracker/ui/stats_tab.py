@@ -27,7 +27,8 @@ def _style_chart(chart: QChart) -> None:
 
 def _style_axis(axis) -> None:
     f = QFont(w.label().font())
-    f.setPointSizeF(8.5)
+    from . import theme as _th
+    f.setPointSizeF(8.5 * _th.BASE_PT / 10)
     axis.setLabelsFont(f)
     axis.setLabelsBrush(QBrush(theme.color("text2")))
     axis.setLinePen(QPen(theme.color("border")))

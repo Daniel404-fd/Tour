@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.lazy.LazyColumn
@@ -463,9 +464,9 @@ internal fun NoteEditor(id: Long, folders: List<ru.habittracker.app.data.NoteFol
         }
         Caption("Папка: " + (folders.firstOrNull { it.id == folderId }?.name ?: "без папки"), modifier = Modifier.padding(horizontal = 16.dp))
         TextField(title, { title = it }, placeholder = { Text("Название") }, singleLine = true, colors = fieldColors,
-            textStyle = TextStyle(fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = t.text), modifier = Modifier.fillMaxWidth())
+            textStyle = TextStyle(fontFamily = fontFamilyFor(Appearance.font), fontSize = 22.sp, fontWeight = FontWeight.SemiBold, color = t.text), modifier = Modifier.fillMaxWidth())
         TextField(body, { body = it }, placeholder = { Text("Текст заметки… Сохраняется автоматически.") }, colors = fieldColors,
-            textStyle = TextStyle(fontSize = 17.sp, color = t.text), modifier = Modifier.fillMaxWidth().weight(1f))
+            textStyle = TextStyle(fontFamily = fontFamilyFor(Appearance.font), fontSize = 17.sp, color = t.text), modifier = Modifier.fillMaxWidth().weight(1f))
     }
     if (delete) ConfirmDialog("Удалить заметку", "Удалить заметку «${note.displayTitle}»? Это нельзя отменить.", "Удалить",
         { deleted = true; repo.deleteNote(id); onBack() }, { delete = false })
@@ -515,7 +516,7 @@ fun SettingsScreen(nav: Nav) {
         AppearanceCard()
         Card("Где хранятся данные") {
             Secondary("Все данные лежат только на телефоне, в личной папке приложения. Если включена синхронизация — ещё и на вашем Яндекс Диске, в папке «HabitTracker-sync».")
-            Caption("Трекер для Android, версия 1.3.0")
+            Caption("Трекер для Android, версия 1.3.1")
         }
         Spacer(Modifier.height(24.dp))
     }
@@ -535,13 +536,28 @@ private fun AppearanceCard() {
         Swatches(ACCENT_PRESETS, Appearance.accent ?: ACCENT_PRESETS[0].first, "Цвет прогресса") {
             Appearance.update(accent = if (it == ACCENT_PRESETS[0].first) null else it)
         }
+        Secondary("Шрифт")
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FONT_CHOICES.forEach { (k, n) ->
+                val sel = Appearance.font == k
+                Text(n, fontFamily = fontFamilyFor(k), fontSize = 15.sp, color = if (sel) t.tealOnSoft else t.text,
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(if (sel) t.tealSoft else t.surface)
+                        .border(1.dp, if (sel) t.teal else t.borderStrong, RoundedCornerShape(16.dp))
+                        .clickable(onClickLabel = "Шрифт: $n") { Appearance.setFont(font = k) }.padding(horizontal = 14.dp, vertical = 7.dp))
+            }
+        }
+        Secondary("Размер текста")
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SCALE_CHOICES.forEach { (v, n) -> Chip(n, Appearance.scale == v) { Appearance.setFont(scale = v) } }
+        }
         Secondary("Тема")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf("system" to "Как в системе", "light" to "Светлая", "dark" to "Тёмная").forEach { (k, n) ->
                 Chip(n, Appearance.mode == k) { Appearance.update(mode = k) }
             }
         }
-        if (Appearance.primary != null || Appearance.accent != null || Appearance.mode != "system")
+        if (Appearance.primary != null || Appearance.accent != null || Appearance.mode != "system" ||
+            Appearance.font != "default" || Appearance.scale != 1f)
             TextButton(onClick = { Appearance.reset() }) { Text("Вернуть как было") }
         Caption("Цвета подстраиваются, чтобы текст читался и в тёмной теме. На компьютере оформление настраивается отдельно.")
     }

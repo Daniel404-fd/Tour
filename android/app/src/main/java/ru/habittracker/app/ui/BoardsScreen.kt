@@ -224,13 +224,19 @@ private fun ColumnPane(board: Board, col: BoardColumn, columns: List<BoardColumn
                 }
             }
         }
+        fun add() {
+            val q = Quick.parse(text, repo.topics(), LocalDate.now())
+            if (q.title.isNotBlank()) { repo.addCard(board.id, col.id, q.title, q.deadline, q.priority, q.topicId); text = "" }
+        }
         OutlinedTextField(text, { text = it }, Modifier.fillMaxWidth().padding(top = 8.dp), singleLine = true,
-            placeholder = { Text("+ Карточка: «Отчёт в пятницу !»") },
+            placeholder = { Text("Новая карточка: «Отчёт в пятницу !»") },
+            trailingIcon = {
+                IconButton(onClick = { add() }, enabled = text.isNotBlank()) {
+                    Icon(Icons.Filled.Add, "Добавить карточку", tint = if (text.isNotBlank()) t.link else t.text3)
+                }
+            },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = {
-                val q = Quick.parse(text, repo.topics(), LocalDate.now())
-                if (q.title.isNotBlank()) { repo.addCard(board.id, col.id, q.title, q.deadline, q.priority, q.topicId); text = "" }
-            }))
+            keyboardActions = KeyboardActions(onDone = { add() }))
     }
     if (rename) TextInputDialog("Колонка", col.name, "Название", onConfirm = { repo.renameColumn(col.id, it) }, onDismiss = { rename = false })
     moveFor?.let { card ->

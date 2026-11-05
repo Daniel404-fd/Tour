@@ -34,8 +34,9 @@ def _hm(dt: datetime) -> str:
 
 
 def _small_font(base: QFont, pt: float, bold: bool = False) -> QFont:
+    from . import theme as _th
     f = QFont(base)
-    f.setPointSizeF(pt)
+    f.setPointSizeF(pt * _th.BASE_PT / 10)     # следует размеру текста из настроек
     f.setBold(bold)
     return f
 

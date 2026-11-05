@@ -235,7 +235,8 @@ class MiniBars(QWidget):
                 y -= block + gap
         # подписи: первый день, середина, сегодня
         f = QFont(self.font())
-        f.setPointSizeF(8.5)
+        from . import theme as _th
+        f.setPointSizeF(8.5 * _th.BASE_PT / 10)
         p.setFont(f)
         p.setPen(theme.color("text2"))
         p.setRenderHint(QPainter.TextAntialiasing)
@@ -414,3 +415,17 @@ def remember_splitter(split, db, key: str, default: list[int]) -> None:
     timer.setInterval(500)
     timer.timeout.connect(lambda: db.set_pref(key, ",".join(str(s) for s in split.sizes())))
     split.splitterMoved.connect(lambda *_: timer.start())
+
+
+def confirm(parent, title: str, text: str, info: str = "", ok: str = "Удалить", danger: bool = True) -> bool:
+    """Вопрос «точно?» в стиле программы: «Отмена» по умолчанию, действие — красной кнопкой."""
+    from PySide6.QtWidgets import QMessageBox
+    box = QMessageBox(QMessageBox.NoIcon, title, text, parent=parent)
+    if info:
+        box.setInformativeText(info)
+    yes = box.addButton(ok, QMessageBox.DestructiveRole if danger else QMessageBox.AcceptRole)
+    no = box.addButton("Отмена", QMessageBox.RejectRole)
+    box.setDefaultButton(no)
+    box.setEscapeButton(no)
+    box.exec()
+    return box.clickedButton() is yes

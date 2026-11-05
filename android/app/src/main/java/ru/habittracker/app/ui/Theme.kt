@@ -96,17 +96,24 @@ object Appearance {
     var primary by mutableStateOf<String?>(null); private set
     var accent by mutableStateOf<String?>(null); private set
     var mode by mutableStateOf("system"); private set     // system | light | dark
+    var font by mutableStateOf("default"); private set    // ключ из FONT_CHOICES
+    var scale by mutableStateOf(1f); private set          // размер текста поверх системного
 
     fun load(ctx: android.content.Context) {
         val p = ctx.getSharedPreferences("appearance", android.content.Context.MODE_PRIVATE)
         prefs = p
         primary = p.getString("primary", null); accent = p.getString("accent", null); mode = p.getString("mode", "system") ?: "system"
+        font = p.getString("font", "default") ?: "default"; scale = p.getFloat("scale", 1f)
+    }
+    fun setFont(font: String = this.font, scale: Float = this.scale) {
+        this.font = font; this.scale = scale
+        prefs?.edit()?.putString("font", font)?.putFloat("scale", scale)?.apply()
     }
     fun update(primary: String? = this.primary, accent: String? = this.accent, mode: String = this.mode) {
         this.primary = primary; this.accent = accent; this.mode = mode
         prefs?.edit()?.putString("primary", primary)?.putString("accent", accent)?.putString("mode", mode)?.apply()
     }
-    fun reset() = update(null, null, "system")
+    fun reset() { update(null, null, "system"); setFont("default", 1f) }
 }
 
 object Contrast {
@@ -154,6 +161,25 @@ fun derive(base: Tokens, dark: Boolean, primary: String?, accent: String?): Toke
     return t
 }
 
+val FONT_CHOICES = listOf("default" to "Стандартный", "condensed" to "Узкий", "serif" to "С засечками",
+    "mono" to "Моноширинный", "light" to "Лёгкий")
+val SCALE_CHOICES = listOf(0.9f to "Мельче", 1f to "Обычный", 1.1f to "Крупнее", 1.2f to "Крупный", 1.3f to "Очень крупный")
+
+fun fontFamilyFor(key: String): androidx.compose.ui.text.font.FontFamily = when (key) {
+    "condensed" -> androidx.compose.ui.text.font.FontFamily(android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.NORMAL))
+    "serif" -> androidx.compose.ui.text.font.FontFamily.Serif
+    "mono" -> androidx.compose.ui.text.font.FontFamily.Monospace
+    "light" -> androidx.compose.ui.text.font.FontFamily(android.graphics.Typeface.create("sans-serif-light", android.graphics.Typeface.NORMAL))
+    else -> androidx.compose.ui.text.font.FontFamily.Default
+}
+
+private fun Typography.withFamily(f: androidx.compose.ui.text.font.FontFamily) = Typography(
+    displayLarge.copy(fontFamily = f), displayMedium.copy(fontFamily = f), displaySmall.copy(fontFamily = f),
+    headlineLarge.copy(fontFamily = f), headlineMedium.copy(fontFamily = f), headlineSmall.copy(fontFamily = f),
+    titleLarge.copy(fontFamily = f), titleMedium.copy(fontFamily = f), titleSmall.copy(fontFamily = f),
+    bodyLarge.copy(fontFamily = f), bodyMedium.copy(fontFamily = f), bodySmall.copy(fontFamily = f),
+    labelLarge.copy(fontFamily = f), labelMedium.copy(fontFamily = f), labelSmall.copy(fontFamily = f))
+
 val LocalTok = staticCompositionLocalOf { LightTokens }
 val tok: Tokens @Composable get() = LocalTok.current
 
@@ -178,8 +204,11 @@ fun TrackerTheme(content: @Composable () -> Unit) {
     val system = isSystemInDarkTheme()
     val dark = when (Appearance.mode) { "dark" -> true; "light" -> false; else -> system }
     val t = derive(if (dark) DarkTokens else LightTokens, dark, Appearance.primary, Appearance.accent)
-    CompositionLocalProvider(LocalTok provides t) {
-        MaterialTheme(colorScheme = scheme(t, dark), typography = Typography(), content = content)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val family = fontFamilyFor(Appearance.font)
+    CompositionLocalProvider(LocalTok provides t,
+        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, density.fontScale * Appearance.scale)) {
+        MaterialTheme(colorScheme = scheme(t, dark), typography = Typography().withFamily(family), content = content)
     }
 }
 
@@ -260,4 +289,6 @@ fun Dot(color: Color, size: Dp = 8.dp) = Box(Modifier.size(size).clip(CircleShap
 @Composable
 fun EmptyText(text: String) = Text(text, color = tok.text2, fontSize = 15.sp, modifier = Modifier.padding(PaddingValues(vertical = 24.dp, horizontal = 8.dp)))
 
-val Header = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp)
+val Header: TextStyle
+    @Composable get() = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp,
+        fontFamily = fontFamilyFor(Appearance.font))

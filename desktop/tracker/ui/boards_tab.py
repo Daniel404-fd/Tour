@@ -90,6 +90,7 @@ class ColumnList(QListWidget):
         self.customContextMenuRequested.connect(self._menu)
         self.itemDoubleClicked.connect(lambda it: page.open_card(it.data(Qt.UserRole)))
         self.currentItemChanged.connect(self._highlight)
+        self.itemClicked.connect(lambda it: page.card_selected(it.data(Qt.UserRole)))
         QShortcut(QKeySequence(Qt.Key_Delete), self, activated=self._delete_current)
         QShortcut(QKeySequence(Qt.Key_Return), self, activated=self._open_current)
 
@@ -227,15 +228,25 @@ class ColumnWidget(QFrame):
             it.setSizeHint(QSize(COLUMN_W - 22, cw.sizeHint().height()))
             self.list.addItem(it)
             self.list.setItemWidget(it, cw)
-        lay.addWidget(self.list, 1)
-
+        # новая карточка — сразу под заголовком, всегда на виду; Enter (или Ctrl+Enter) или кнопка «+»
+        add_row = QHBoxLayout()
+        add_row.setSpacing(4)
         self.add = QLineEdit()
         self.add.setObjectName("kanbanAdd")
-        self.add.setPlaceholderText("+ Добавить карточку")
-        self.add.setToolTip("Enter — добавить. Можно сразу: «Отчёт в пятницу !» — срок и важность распознаются")
+        self.add.setPlaceholderText("Новая карточка…")
+        self.add.setToolTip("Enter или Ctrl+Enter — добавить.\nМожно сразу со сроком и важностью: «Отчёт в пятницу !»")
         self.add.setAccessibleName(f"Новая карточка в колонке «{column.name}»")
         self.add.returnPressed.connect(self._add)
-        lay.addWidget(self.add)
+        for seq in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(seq), self.add, activated=self._add)
+        self.add_btn = w.button("", "primary", "plus", "Добавить карточку (Enter)")
+        self.add_btn.setFixedSize(32, 30)
+        self.add_btn.setIcon(icons.icon("plus", theme["teal_text"]))
+        self.add_btn.clicked.connect(self._add)
+        add_row.addWidget(self.add, 1)
+        add_row.addWidget(self.add_btn)
+        lay.addLayout(add_row)
+        lay.addWidget(self.list, 1)
 
     def _add(self) -> None:
         text = self.add.text().strip()
@@ -249,6 +260,88 @@ class ColumnWidget(QFrame):
         self.page.refresh(focus_add=self.column.id)
 
 
+# ---------------------------------------------------------------- карточка (справа)
+
+class CardPanel(QWidget):
+    """Выбранная карточка: описание и подзадачи — отмечаются и добавляются прямо здесь."""
+
+    def __init__(self, page: "BoardsPage"):
+        super().__init__()
+        from .tasks_tab import SubtaskList
+        self.page = page
+        self.db = page.db
+        self.task_id: int | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        self.title = w.label("", "section", wrap=True)
+        self.title.setTextFormat(Qt.PlainText)
+        self.meta = w.label("", "caption", wrap=True)
+        self.desc = w.label("", "secondary", wrap=True)
+        self.desc.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.desc.setTextFormat(Qt.PlainText)
+        lay.addWidget(self.title)
+        lay.addWidget(self.meta)
+        lay.addWidget(self.desc)
+        self.subs_title = w.label("Подзадачи", "section")
+        lay.addWidget(self.subs_title)
+        self.subs = SubtaskList(compact=True)
+        self.subs.changed.connect(lambda: QTimer.singleShot(0, self._apply))
+        lay.addWidget(self.subs)
+        btns = QHBoxLayout()
+        self.edit_btn = w.button("Изменить…", None, "edit")
+        self.edit_btn.clicked.connect(lambda: self.page.open_card(self.task_id))
+        self.done_btn = w.button("Готово", "primary", "check")
+        self.done_btn.clicked.connect(self._toggle_done)
+        btns.addWidget(self.edit_btn)
+        btns.addWidget(self.done_btn)
+        btns.addStretch()
+        lay.addLayout(btns)
+        lay.addStretch(1)
+        self.show_task(None)
+
+    def show_task(self, task_id: int | None) -> None:
+        t = self.db.get_task(task_id) if task_id else None
+        self.task_id = t.id if t else None
+        for x in (self.meta, self.subs_title, self.subs, self.edit_btn, self.done_btn):
+            x.setVisible(t is not None)
+        if t is None:
+            self.title.setText("Выберите карточку")
+            self.desc.setText("Щёлкните по карточке, чтобы увидеть описание и разбить её на подзадачи. "
+                              "Двойной щелчок — открыть целиком.")
+            self.desc.show()
+            return
+        today = date.today()
+        self.title.setText(t.title)
+        col = next((c for c in self.page.columns if c.id == t.column_id), None)
+        meta = [col.name if col else ""]
+        if t.deadline:
+            meta.append(f"срок {w.human_date(t.deadline, today)}" + ("" if t.done else f" · {logic.due_text(t.deadline, today)}"))
+        meta.append("приоритет: " + logic.PRIORITY_NAMES[t.priority].lower())
+        self.meta.setText(" · ".join(x for x in meta if x))
+        self.desc.setText(t.description)
+        self.desc.setVisible(bool(t.description))
+        self.subs.set_entries([{"id": x.id, "title": x.title, "done": x.done} for x in self.db.subtasks(t.id)])
+        self.done_btn.setText("Вернуть в работу" if t.done else "Готово")
+        self.done_btn.setProperty("kind", None if t.done else "primary")
+        from .theme import repolish
+        repolish(self.done_btn)
+
+    def _apply(self) -> None:
+        if self.task_id is None or self.db.get_task(self.task_id) is None:
+            return
+        apply_subtasks(self.db, self.task_id, self.subs.entries())
+        # новые подзадачи получили номера — без этого следующая правка создала бы дубли
+        self.subs.set_entries([{"id": x.id, "title": x.title, "done": x.done} for x in self.db.subtasks(self.task_id)])
+        self.page.refresh(keep_panel=True)
+
+    def _toggle_done(self) -> None:
+        t = self.db.get_task(self.task_id)
+        if t:
+            self.db.complete_task(t.id, not t.done)
+            self.page.refresh()
+
+
 # ---------------------------------------------------------------- заметки доски
 
 class BoardNotes(QFrame):
@@ -258,7 +351,6 @@ class BoardNotes(QFrame):
         super().__init__()
         self.page = page
         self.db = page.db
-        self.setObjectName("card")
         self.current: int | None = None
         self._loading = False
         self.timer = QTimer(self)
@@ -266,10 +358,9 @@ class BoardNotes(QFrame):
         self.timer.setInterval(600)
         self.timer.timeout.connect(self.flush)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         head = QHBoxLayout()
-        head.addWidget(w.label("Заметки доски", "section"))
         head.addStretch()
         add = w.button("", "ghost", "plus", "Новая заметка")
         add.setFixedSize(30, 28)
@@ -293,8 +384,17 @@ class BoardNotes(QFrame):
         self.body.textChanged.connect(self._changed)
         lay.addWidget(self.title)
         lay.addWidget(self.body, 1)
-        self.hint = w.label("Здесь — заметки только этой доски: договорённости, контакты, идеи.", "caption", wrap=True)
-        lay.addWidget(self.hint)
+        # пустое состояние — сверху, под заголовком (а не посередине панели)
+        self.empty_box = QWidget()
+        el = QVBoxLayout(self.empty_box)
+        el.setContentsMargins(0, 4, 0, 0)
+        el.setSpacing(8)
+        el.addWidget(w.label("Заметки только этой доски: договорённости, контакты, идеи по работе.", "secondary", wrap=True))
+        first = w.button("Новая заметка", None, "plus")
+        first.clicked.connect(self.new_note)
+        el.addWidget(first, 0, Qt.AlignLeft)
+        el.addStretch(1)
+        lay.addWidget(self.empty_box, 1)
 
     def load(self) -> None:
         self.flush()
@@ -323,8 +423,8 @@ class BoardNotes(QFrame):
         for x in (self.title, self.body):
             x.setVisible(note is not None)
         self.list.setVisible(self.list.count() > 0)
+        self.empty_box.setVisible(note is None and self.list.count() == 0)
         self.list.setFixedHeight(min(170, self.list.count() * 34 + 10))
-        self.hint.setVisible(note is None)
 
     def _select(self, item, _prev=None) -> None:
         if self._loading or item is None:
@@ -372,7 +472,7 @@ class BoardNotes(QFrame):
 
     def _delete(self, nid: int) -> None:
         n = self.db.get_note(nid)
-        if QMessageBox.question(self, "Удалить заметку", f"Удалить «{n.display_title}»?") == QMessageBox.Yes:
+        if w.confirm(self, "Удалить заметку", f"Удалить «{n.display_title}»?", "Это нельзя отменить."):
             if self.current == nid:
                 self.current = None
             self.db.delete_note(nid)
@@ -392,7 +492,7 @@ class BoardsPage(w.Page):
         except ValueError:
             self.board_id = None
 
-        self.notes_btn = w.button("Заметки", None, "notes", "Показать или скрыть заметки доски")
+        self.notes_btn = w.button("Панель", None, "notes", "Показать или скрыть панель справа: карточка и заметки доски")
         self.notes_btn.setCheckable(True)
         self.notes_btn.setChecked(db.get_pref("board_notes", "1") == "1")
         self.notes_btn.toggled.connect(self._toggle_notes)
@@ -435,9 +535,32 @@ class BoardsPage(w.Page):
         self.cols_row.setSpacing(10)
         self.kanban.setWidget(holder)
         self.split.addWidget(self.kanban)
+        self.side = QFrame()
+        self.side.setObjectName("card")
+        self.side.setMinimumWidth(260)
+        sl = QVBoxLayout(self.side)
+        sl.setContentsMargins(14, 12, 14, 12)
+        sl.setSpacing(10)
+        seg = QHBoxLayout()
+        seg.setSpacing(6)
+        self.side_group = QButtonGroup(self)
+        self.side_group.setExclusive(True)
+        from PySide6.QtWidgets import QStackedWidget
+        self.side_stack = QStackedWidget()
+        self.card_panel = CardPanel(self)
         self.notes = BoardNotes(self)
-        self.notes.setMinimumWidth(240)
-        self.split.addWidget(self.notes)
+        self.side_stack.addWidget(self.card_panel)
+        self.side_stack.addWidget(self.notes)
+        for i, name in enumerate(("Карточка", "Заметки доски")):
+            c = w.chip(name, i == 0)
+            c.setProperty("value", i)
+            self.side_group.addButton(c)
+            seg.addWidget(c)
+        seg.addStretch()
+        self.side_group.buttonClicked.connect(lambda b: self._side_tab(b.property("value")))
+        sl.addLayout(seg)
+        sl.addWidget(self.side_stack, 1)
+        self.split.addWidget(self.side)
         self.split.setStretchFactor(0, 1)
         self.split.setCollapsible(0, False)
         w.remember_splitter(self.split, db, "split_boards", [800, 320])
@@ -534,10 +657,10 @@ class BoardsPage(w.Page):
         if b is None:
             return
         n = len(self.db.list_tasks(board_id=b.id))
-        if QMessageBox.question(self, "Удалить доску",
-                                f"Удалить доску «{b.name}» вместе с {n} "
-                                f"{logic.plural(n, 'карточкой', 'карточками', 'карточками')} и её заметками?\n"
-                                "Это нельзя отменить. Чтобы просто убрать её — отправьте в архив.") == QMessageBox.Yes:
+        if w.confirm(self, "Удалить доску",
+                     f"Удалить доску «{b.name}» вместе с {n} "
+                     f"{logic.plural(n, 'карточкой', 'карточками', 'карточками')} и её заметками?",
+                     "Это нельзя отменить. Чтобы просто убрать доску — отправьте её в архив."):
             self.db.delete_board(b.id)
             self.board_id = None
             self.refresh()
@@ -620,7 +743,8 @@ class BoardsPage(w.Page):
 
     def delete_card(self, task_id: int) -> None:
         t = self.db.get_task(task_id)
-        if t and QMessageBox.question(self, "Удалить карточку", f"Удалить «{t.title}»?") == QMessageBox.Yes:
+        if t and w.confirm(self, "Удалить карточку", f"Удалить «{t.title}»?",
+                           "Вместе с подзадачами. Это нельзя отменить."):
             self.db.delete_task(task_id)
             self.refresh()
 
@@ -649,8 +773,27 @@ class BoardsPage(w.Page):
         elif board_id is not None:
             self.select_board(board_id)
 
+    def _side_tab(self, i: int) -> None:
+        self.side_stack.setCurrentIndex(i)
+        for b in self.side_group.buttons():
+            b.setChecked(b.property("value") == i)
+
+    def card_selected(self, task_id: int | None) -> None:
+        self.selected = task_id
+        for cw in (self.cols_row.itemAt(i).widget() for i in range(self.cols_row.count())):
+            if isinstance(cw, ColumnWidget):          # подсветка — только у одной карточки на доске
+                cur = cw.list.currentItem()
+                if cur is not None and cur.data(Qt.UserRole) != task_id:
+                    cw.list._highlight(None, cur)
+                    cw.list.blockSignals(True)
+                    cw.list.setCurrentRow(-1)
+                    cw.list.blockSignals(False)
+        self.card_panel.show_task(task_id)
+        if task_id is not None:
+            self._side_tab(0)
+
     def _toggle_notes(self, on: bool, save: bool = True) -> None:
-        self.notes.setVisible(on)
+        self.side.setVisible(on)
         if save:
             self.db.set_pref("board_notes", "1" if on else "0")
 
@@ -658,7 +801,7 @@ class BoardsPage(w.Page):
         self.notes.flush()
 
     # ---- отрисовка ----
-    def refresh(self, focus_add: int | None = None) -> None:
+    def refresh(self, focus_add: int | None = None, keep_panel: bool = False) -> None:
         boards = self._boards()
         if self.board_id not in {b.id for b in boards}:
             self.board_id = boards[0].id if boards else None
@@ -714,3 +857,17 @@ class BoardsPage(w.Page):
             sub += f" · {overdue} просрочено"
         self.header.set_subtitle(sub)
         self.notes.load()
+        sel = getattr(self, "selected", None)
+        if sel is not None and self.db.get_task(sel) is None:
+            sel = None
+        if sel is not None:          # выделение карточки сохраняется после перерисовки
+            for cw in (self.cols_row.itemAt(i).widget() for i in range(self.cols_row.count())):
+                if isinstance(cw, ColumnWidget):
+                    for k in range(cw.list.count()):
+                        if cw.list.item(k).data(Qt.UserRole) == sel:
+                            cw.list.blockSignals(True)
+                            cw.list.setCurrentRow(k)
+                            cw.list._highlight(cw.list.item(k), None)
+                            cw.list.blockSignals(False)
+        if not keep_panel:
+            self.card_panel.show_task(sel)

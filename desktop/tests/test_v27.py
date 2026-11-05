@@ -213,3 +213,90 @@ def test_sidebar_collapse_and_restore(tmp_path, app):
     win.navigate("boards")
     assert win.stack.currentWidget() is win.pages[4]
     win.close()
+
+
+# ---------------------------------------------------------------- 2.7.1: правки по отзыву
+
+def test_card_panel_subtasks_no_duplicates(tmp_path, app):
+    from tracker.ui import boards_tab
+    db = Database(tmp_path / "t.sqlite3")
+    b = db.add_board("Работа")
+    col = db.list_columns(b)[0]
+    tid = db.add_card(b, col.id, "Отчёт")
+    page = keep(boards_tab.BoardsPage(db))
+    page.refresh()
+    page.card_selected(tid)
+    panel = page.card_panel
+    for name in ("Собрать цифры", "Отправить"):
+        panel.subs.add_edit.setText(name)
+        panel.subs._add()
+        app.processEvents()
+    panel.subs.list.item(0).setCheckState(__import__("PySide6.QtCore", fromlist=["Qt"]).Qt.Checked)
+    app.processEvents()
+    assert [(s.title, s.done) for s in db.subtasks(tid)] == [("Собрать цифры", True), ("Отправить", False)]
+    panel._toggle_done()
+    assert db.get_task(tid).done
+
+
+def test_column_add_button_and_ctrl_enter(tmp_path, app):
+    from tracker.ui import boards_tab
+    db = Database(tmp_path / "t.sqlite3")
+    page = keep(boards_tab.BoardsPage(db))
+    page._two_jobs()
+    col = next(c for c in (page.cols_row.itemAt(i).widget() for i in range(page.cols_row.count()))
+               if isinstance(c, boards_tab.ColumnWidget))
+    col.add.setText("Позвонить")
+    col.add_btn.click()
+    assert [t.title for t in db.list_tasks(board_id=page.board_id)] == ["Позвонить"]
+
+
+def test_message_boxes_restyled(app):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QMessageBox
+    from tracker.ui import widgets as w
+    seen = {}
+
+    def check():
+        box = QApplication_active()
+        seen["icon"] = box.icon()
+        seen["kinds"] = {b.text(): b.property("kind") for b in box.buttons()}
+        seen["default"] = box.defaultButton().text()
+        box.reject()
+
+    def QApplication_active():
+        from PySide6.QtWidgets import QApplication
+        return next(x for x in QApplication.topLevelWidgets() if isinstance(x, QMessageBox) and x.isVisible())
+    QTimer.singleShot(50, check)
+    assert w.confirm(None, "Удалить карточку", "Удалить «NOVA»?") is False
+    assert seen["icon"] == QMessageBox.NoIcon
+    assert seen["kinds"]["Удалить"] == "dangerSolid" and seen["default"] == "Отмена"
+
+
+def test_font_choice_scales_text(app):
+    from tracker.ui import theme as th
+    th.set_appearance({"font_size": 12})
+    assert th.BASE_PT == 12 and "12.0pt" in app.styleSheet()
+    fams = th.available_fonts()
+    if fams:
+        th.set_appearance({"font": fams[-1]})
+        assert th.FONT_FAMILY == fams[-1]
+    th.set_appearance({})
+    assert th.BASE_PT == 10
+
+
+def test_sidebar_never_half_width(tmp_path, app):
+    from tracker.session import Session
+    from tracker.ui.main_window import MainWindow, SIDEBAR_ICONS, SIDEBAR_MIN
+    s = Session.open_plain(tmp_path / "d")
+    win = keep(MainWindow(s))
+    win.resize(1200, 800)
+    win.show()
+    app.processEvents()
+    win._sidebar_dragged(0, 1)                     # Qt «схлопнул» панель
+    assert win._collapsed and win.splitter.sizes()[0] == SIDEBAR_ICONS
+    win._sidebar_dragged(90, 1)                    # чуть потянули — остаётся полосой иконок
+    assert win._collapsed and win.splitter.sizes()[0] == SIDEBAR_ICONS
+    win._sidebar_dragged(200, 1)                   # вытянули — разворачивается, не уже минимума
+    assert not win._collapsed and win.splitter.sizes()[0] >= SIDEBAR_MIN
+    assert win.sidebar_panel.minimumWidth() == SIDEBAR_MIN
+    win.close()
