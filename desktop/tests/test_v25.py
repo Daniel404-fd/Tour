@@ -100,13 +100,13 @@ def test_task_page_detail_and_progress(tmp_path, app):
 def test_many_topics_become_dropdown(tmp_path, app):
     from tracker.ui import tasks_tab
     db = Database(tmp_path / "t.sqlite3")
-    ids = [db.add_topic(f"Тема {i}", "#008000") for i in range(9)]
+    ids = [db.add_topic(f"Тема {i}", "#008000") for i in range(16)]
     db.add_task(Task(0, "x", topic_id=ids[3]))
     db.add_task(Task(0, "y", topic_id=ids[5]))
     page = keep(tasks_tab.TasksPage(db))
     page.refresh()
     combos = [c for c in page.findChildren(QComboBox) if c.accessibleName() == "Фильтр по теме"]
-    assert combos, "при 9 темах фильтр должен быть списком"
+    assert combos, "при 16 темах фильтр должен быть списком"
     combo = combos[-1]
     combo.setCurrentIndex(combo.findData(ids[3]))
     app.processEvents()

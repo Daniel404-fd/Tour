@@ -79,7 +79,7 @@ class HomePage(w.Page):
         now = datetime.now()
         habits = self.db.list_habits()
         marks = self.db.all_marks()
-        tasks = self.db.list_tasks()
+        tasks = self.db.list_tasks(include_boards=True)   # и карточки досок — у них тоже бывают сроки
         topics = {t.id: t for t in self.db.list_topics()}
         goals = logic.active_goals(self.db.list_goals())
         steps = self.db.all_steps()
@@ -240,6 +240,7 @@ class HomePage(w.Page):
             return card
         box = QVBoxLayout()
         box.setSpacing(0)
+        boards = {b.id: b for b in self.db.list_boards(include_archived=True)}
         for i, t in enumerate(upcoming[:10]):
             row = w.ClickableFrame()
             row.setObjectName("row" if i < min(len(upcoming), 10) - 1 else "rowLast")
@@ -263,14 +264,16 @@ class HomePage(w.Page):
                 f = title.font(); f.setWeight(f.Weight.DemiBold); title.setFont(f)
             col.addWidget(title)
             topic = topics.get(t.topic_id)
-            if topic:
+            board = boards.get(t.board_id)
+            if topic or board:
                 tl = w.label("", "caption")
-                tl.setText(w.topic_html(topic.name, topic.color))
+                tl.setText(" · ".join(w.topic_html(x.name, x.color) for x in (board, topic) if x))
                 col.addWidget(tl)
             lay.addLayout(col, 1)
             role = "danger" if logic.is_overdue(t, today) else ("warn" if t.deadline == today else "secondary")
             lay.addWidget(w.label(logic.due_text(t.deadline, today), role))
-            row.clicked.connect(lambda tid=t.id: self.navigate("tasks", task_id=tid))
+            row.clicked.connect(lambda tid=t.id, bid=t.board_id: self.navigate("boards", task_id=tid) if bid
+                                else self.navigate("tasks", task_id=tid))
             box.addWidget(row)
         card.body.addLayout(box)
         if len(upcoming) > 10:
@@ -278,10 +281,7 @@ class HomePage(w.Page):
         return card
 
     def _complete(self, task_id: int) -> None:
-        task = self.db.get_task(task_id)
-        if task:
-            task.done = True
-            self.db.update_task(task)
+        self.db.complete_task(task_id)
         self.refresh()
 
     def _chart_card(self, habits, marks, today) -> w.Card:

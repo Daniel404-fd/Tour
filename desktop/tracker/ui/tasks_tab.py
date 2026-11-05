@@ -6,7 +6,7 @@ from PySide6.QtCore import QDate, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox,
-    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QFormLayout, QFrame, QSplitter, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QMenu, QMessageBox, QPlainTextEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
@@ -267,6 +267,9 @@ class TaskDialog(QDialog):
             completed_on=self.task.completed_on if (done and self.task.done) else None,
             archived=self.task.archived,
             topic_id=self.topic.currentData(),
+            board_id=self.task.board_id,
+            column_id=self.task.column_id,
+            position=self.task.position,
         )
 
 
@@ -450,8 +453,7 @@ class TasksPage(w.Page):
         self.header.add_action(new_btn)
 
         # фильтры: статус и тема
-        filters = QHBoxLayout()
-        filters.setSpacing(6)
+        filters = w.ChipStrip()
         self.status_group = QButtonGroup(self)
         self.status_group.setExclusive(True)
         for name, value in STATUS_FILTERS:
@@ -461,11 +463,10 @@ class TasksPage(w.Page):
             filters.addWidget(c)
         self.status_group.buttonClicked.connect(self._status_changed)
         filters.addStretch()
-        self.content.addLayout(filters)
+        self.content.addWidget(filters)
 
-        self.topic_row = QHBoxLayout()
-        self.topic_row.setSpacing(6)
-        self.content.addLayout(self.topic_row)
+        self.topic_row = w.ChipStrip()
+        self.content.addWidget(self.topic_row)
         self.topic_group = QButtonGroup(self)
         self.topic_group.setExclusive(True)
         self.topic_group.buttonClicked.connect(self._topic_changed)
@@ -550,7 +551,7 @@ class TasksPage(w.Page):
         # карточка выбранной задачи: описание и подзадачи можно отмечать, не открывая диалог
         self.detail = QFrame()
         self.detail.setObjectName("card")
-        self.detail.setFixedWidth(300)
+        self.detail.setMinimumWidth(240)
         dl = QVBoxLayout(self.detail)
         dl.setContentsMargins(16, 14, 16, 14)
         dl.setSpacing(8)
@@ -572,15 +573,22 @@ class TasksPage(w.Page):
         dl.addStretch(1)
         self._detail_task_id: int | None = None
 
-        body = QHBoxLayout()
-        body.setSpacing(12)
-        left = QVBoxLayout()
+        # список | карточка задачи — границу можно тянуть мышью
+        body = QSplitter(Qt.Horizontal)
+        body.setObjectName("pageSplit")
+        body.setHandleWidth(10)
+        lw = QWidget()
+        left = QVBoxLayout(lw)
+        left.setContentsMargins(0, 0, 0, 0)
         left.setSpacing(0)
         left.addWidget(self.table, 1)
         left.addWidget(self.empty)
-        body.addLayout(left, 1)
+        body.addWidget(lw)
         body.addWidget(self.detail)
-        self.content.addLayout(body, 1)
+        body.setStretchFactor(0, 1)
+        body.setCollapsible(0, False)
+        w.remember_splitter(body, db, "split_tasks", [700, 300])
+        self.content.addWidget(body, 1)
 
         QShortcut(QKeySequence(Qt.Key_Space), self.table, activated=self.toggle_selected)
         QShortcut(QKeySequence(Qt.Key_Return), self.table, activated=self.edit_selected)
@@ -602,12 +610,12 @@ class TasksPage(w.Page):
         self.db.set_pref("tasks_topic", str(value))
         self.refresh()
 
-    CHIP_LIMIT = 6   # больше тем — фильтр становится выпадающим списком
+    CHIP_LIMIT = 15   # больше тем — фильтр становится выпадающим списком (плашки листаются)
 
     def _rebuild_topic_chips(self, topics: list[logic.Topic], counts: dict | None = None) -> None:
         for b in self.topic_group.buttons():
             self.topic_group.removeButton(b)
-        w.clear_layout(self.topic_row)
+        self.topic_row.clear()
         counts = counts or {}
         ids = {t.id for t in topics}
         if self.topic_filter not in ids and self.topic_filter not in (logic.TOPIC_ALL, logic.TOPIC_NONE):

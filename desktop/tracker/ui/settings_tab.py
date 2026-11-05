@@ -117,9 +117,10 @@ class SettingsPage(w.Page):
         sb = dict(cfg.get("sidebar") or {})
         card.body.addWidget(w.label("Фон боковой панели", "section"))
         mode = QComboBox()
-        for key, name in (("primary", "Основной цвет"), ("color", "Свой цвет"), ("image", "Картинка")):
+        for key, name in (("neutral", "Светлая, как в Notion"), ("primary", "Основной цвет"),
+                          ("color", "Свой цвет"), ("image", "Картинка")):
             mode.addItem(name, key)
-        mode.setCurrentIndex(max(0, mode.findData(sb.get("mode", "primary"))))
+        mode.setCurrentIndex(max(0, mode.findData(sb.get("mode", "neutral"))))
         mode.setAccessibleName("Фон боковой панели")
         row = [mode]
         if sb.get("mode") == "color":
@@ -139,7 +140,7 @@ class SettingsPage(w.Page):
                 return self._pick_sidebar_color(cfg, new)
             if key == "image" and not sb.get("image"):
                 return self._pick_sidebar_image(cfg, new)
-            self._set_appearance({**cfg, "sidebar": new if key != "primary" else None})
+            self._set_appearance({**cfg, "sidebar": new if key != "neutral" else None})
         mode.currentIndexChanged.connect(mode_changed)
 
         if sb.get("mode") == "image" and sb.get("image"):
@@ -354,15 +355,84 @@ class SettingsPage(w.Page):
         path, _ = Session.locate(self.session.data_dir)
         card.body.addWidget(w.label(str(path), None, wrap=True))
         card.body.addWidget(w.label(
-            "Каждое изменение сразу записывается на диск целиком и «одним движением», поэтому "
-            "внезапное выключение компьютера не испортит файл.", "secondary", wrap=True))
+            "Изменения записываются на диск целиком и «одним движением» (не позже чем через полсекунды), "
+            "поэтому внезапное выключение компьютера не испортит файл.", "secondary", wrap=True))
         open_btn = w.button("Открыть папку")
         open_btn.clicked.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(self.session.data_dir))))
-        card.body.addLayout(_row(open_btn))
+        move_btn = w.button("Выбрать другую папку…")
+        move_btn.setToolTip("Например, другой диск или папка, которую сохраняет облако")
+        move_btn.clicked.connect(self.change_data_dir)
+        row = [open_btn, move_btn]
+        from ..relocate import home_dir
+        if self.session.data_dir.resolve() != home_dir().resolve():
+            back = w.button("Вернуть обычную папку", "ghost")
+            back.clicked.connect(lambda: self.change_data_dir(home_dir()))
+            row.append(back)
+        card.body.addLayout(_row(*row))
         from ..paths import APP_VERSION
         card.body.addWidget(w.label(f"Трекер привычек и задач, версия {APP_VERSION}", "caption"))
         return card
+
+    # ---------------------------------------------------------------- папка данных
+
+    def change_data_dir(self, folder=None) -> None:
+        from .. import relocate
+        cur = self.session.data_dir
+        if folder is None:
+            path = QFileDialog.getExistingDirectory(self, "Папка для данных трекера", str(cur.parent))
+            if not path:
+                return
+            folder = Path(path)
+            if folder.name != relocate.APP_DIR_NAME and not relocate.has_data(folder) and any(folder.iterdir()):
+                folder = folder / relocate.APP_DIR_NAME     # в непустую чужую папку — своей подпапкой
+        folder = Path(folder)
+        if folder.resolve() == cur.resolve():
+            return
+        use_existing = False
+        if relocate.has_data(folder):
+            box = QMessageBox(QMessageBox.Question, "В папке уже есть данные",
+                              f"В папке «{folder}» уже лежат данные трекера.", parent=self)
+            box.setInformativeText("Открыть их вместо текущих или заменить их текущими данными?\n"
+                                   "(Заменённые файлы не пропадут — они попадут в резервные копии этой папки.)")
+            open_b = box.addButton("Открыть те данные", QMessageBox.AcceptRole)
+            repl_b = box.addButton("Заменить текущими", QMessageBox.DestructiveRole)
+            box.addButton("Отмена", QMessageBox.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_b:
+                use_existing = True
+            elif box.clickedButton() is not repl_b:
+                return
+            else:
+                from .. import backup
+                for name in (relocate.PLAIN_NAME, relocate.ENCRYPTED_NAME):
+                    f = folder / name
+                    if f.exists():
+                        bdir = backup.backup_dir(folder)
+                        bdir.mkdir(parents=True, exist_ok=True)
+                        f.replace(bdir / f"replaced-{datetime.now():%Y%m%d-%H%M%S}-{name}")
+        if hasattr(self.window(), "_flush"):
+            self.window()._flush()
+        self.session.db.flush_save()
+        if not use_existing:
+            try:
+                with _Busy():
+                    relocate.copy_data(cur, folder)
+            except (OSError, ValueError) as e:
+                QMessageBox.warning(self, "Не удалось перенести", f"Данные остались на месте.\n\n{e}")
+                return
+        relocate.set_location(folder)
+        QMessageBox.information(self, "Папка изменена",
+                                f"Теперь данные хранятся здесь:\n{folder}\n\n"
+                                + ("" if use_existing else
+                                   f"В прежней папке осталась копия — её можно удалить, когда убедитесь, что всё на месте:\n{cur}\n\n")
+                                + "Программа сейчас перезапустится.")
+        from PySide6.QtCore import QProcess
+        from PySide6.QtWidgets import QApplication
+        import sys
+        args = sys.argv[1:] if getattr(sys, "frozen", False) else sys.argv
+        QProcess.startDetached(sys.executable, args)
+        QApplication.instance().quit()
 
     # ---------------------------------------------------------------- пароль
 

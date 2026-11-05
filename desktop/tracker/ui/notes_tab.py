@@ -5,6 +5,7 @@ from datetime import date, datetime
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QSplitter,
     QComboBox, QHBoxLayout, QInputDialog, QLineEdit, QListWidget, QListWidgetItem, QMenu,
     QMessageBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
@@ -120,8 +121,10 @@ class NotesPage(w.Page):
         new_btn.clicked.connect(self.new_item)
         self.header.add_action(new_btn)
 
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        # папки | список | текст — все границы можно тянуть мышью, папки можно свернуть
+        body = QSplitter(Qt.Horizontal)
+        body.setObjectName("pageSplit")
+        body.setHandleWidth(12)
 
         # ---- папки ----
         fcol = QVBoxLayout()
@@ -144,7 +147,7 @@ class NotesPage(w.Page):
         fcol.addWidget(w.label("Перетащите заметку на папку, чтобы переложить её.", "caption", wrap=True))
         fw = QWidget()
         fw.setLayout(fcol)
-        fw.setFixedWidth(200)
+        fw.setMinimumWidth(150)
         body.addWidget(fw)
 
         left = QVBoxLayout()
@@ -169,7 +172,7 @@ class NotesPage(w.Page):
         left.addWidget(self.list_empty, 1)
         lw = QWidget()
         lw.setLayout(left)
-        lw.setFixedWidth(290)
+        lw.setMinimumWidth(200)
         left.setContentsMargins(0, 0, 0, 0)
         body.addWidget(lw)
 
@@ -207,13 +210,21 @@ class NotesPage(w.Page):
         self.text.textChanged.connect(self._changed)
         self.editor.body.addWidget(self.text, 1)
         self.editor.body.addWidget(self.meta)
-        body.addWidget(self.editor, 1)
-
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.addWidget(self.editor, 1)
         self.empty = w.label("Заметок пока нет.\nНажмите «Новая заметка» или Ctrl+N — "
                              "идеи, списки, мысли.", "empty", wrap=True)
         self.empty.setAlignment(Qt.AlignCenter)
-        body.addWidget(self.empty, 1)
-        self.content.addLayout(body, 1)
+        rl.addWidget(self.empty, 1)
+        right.setMinimumWidth(300)
+        body.addWidget(right)
+        body.setStretchFactor(2, 1)
+        body.setCollapsible(1, False)
+        body.setCollapsible(2, False)
+        w.remember_splitter(body, db, "split_notes", [200, 290, 700])
+        self.content.addWidget(body, 1)
 
         QShortcut(QKeySequence.Find, self, activated=self.search.setFocus)
 

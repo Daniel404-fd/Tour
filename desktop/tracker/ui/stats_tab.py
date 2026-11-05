@@ -63,7 +63,7 @@ class StatsPage(w.Page):
         today = date.today()
         habits = self.db.list_habits(include_archived=True)
         marks = self.db.all_marks()
-        tasks = self.db.list_tasks()
+        tasks = self.db.list_tasks(include_boards=True)
         goals = self.db.list_goals()
 
         w.clear_layout(self.summary)

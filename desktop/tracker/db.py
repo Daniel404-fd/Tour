@@ -7,7 +7,7 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
-from .logic import Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
+from .logic import Board, BoardColumn, Contribution, Goal, GoalStep, Habit, Note, NoteFolder, Subtask, Task, Topic
 from .cal import EVENT_COLORS, CalendarInfo, Event
 from . import sync
 from .storage import PlainStore
@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_on TEXT,
     archived     INTEGER NOT NULL DEFAULT 0,
     topic_id     INTEGER REFERENCES topics(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS boards (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT    NOT NULL,
+    color    TEXT    NOT NULL DEFAULT '#0F6E6A',
+    position INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS board_columns (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    name     TEXT    NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    is_done  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS topics (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,13 +142,9 @@ def _now() -> str:
 
 
 def default_data_dir() -> Path:
-    if sys.platform.startswith("win"):
-        base = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    else:
-        base = Path.home() / ".local" / "share"
-    return base / APP_DIR_NAME
+    """Папка с данными: своя (если выбрана в настройках) или обычная папка программы."""
+    from .relocate import configured_dir
+    return configured_dir()
 
 
 def default_db_path() -> Path:
@@ -160,6 +170,8 @@ class Database:
         self.store = store
         self.on_save_error = on_save_error
         self.on_commit = None          # вызывается после каждого изменения (автосинхронизация)
+        self.save_later = None         # если задано — запись на диск откладывается (см. flush_save)
+        self._pending_save = False
         self.conn = sqlite3.connect(":memory:")
         blob = store.load() if data is None else data
         self._open(blob)
@@ -182,11 +194,21 @@ class Database:
 
     def _commit(self) -> None:
         self.conn.commit()
-        self.save()
+        if self.save_later is not None:
+            self._pending_save = True
+            self.save_later()          # программа сохранит чуть позже одним разом (плавнее при частых правках)
+        else:
+            self.save()
         if self.on_commit is not None:
             self.on_commit()
 
+    def flush_save(self) -> None:
+        """Записать отложенные изменения на диск (таймер окна, закрытие, синхронизация)."""
+        if self._pending_save:
+            self.save()
+
     def save(self) -> None:
+        self._pending_save = False
         try:
             self.store.save(self.snapshot())
         except OSError as e:
@@ -228,7 +250,15 @@ class Database:
             self.conn.execute("ALTER TABLE goals ADD COLUMN financial INTEGER NOT NULL DEFAULT 0")
         if "target_amount" not in gcols:
             self.conn.execute("ALTER TABLE goals ADD COLUMN target_amount REAL NOT NULL DEFAULT 0")
+        # доски (канбан): задача может лежать в колонке доски, заметка — принадлежать доске
+        if "board_id" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN column_id INTEGER"
+                              " REFERENCES board_columns(id) ON DELETE SET NULL")
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN position REAL")
         ncols = {r[1] for r in self.conn.execute("PRAGMA table_info(notes)")}
+        if "board_id" not in ncols:
+            self.conn.execute("ALTER TABLE notes ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
         if "folder_id" not in ncols:
             self.conn.execute("ALTER TABLE notes ADD COLUMN folder_id INTEGER"
                               " REFERENCES note_folders(id) ON DELETE SET NULL")
@@ -298,7 +328,7 @@ class Database:
     def add_task(self, task: Task) -> int:
         cur = self.conn.execute(
             "INSERT INTO tasks(title, description, deadline, priority, done, completed_on, archived,"
-            " topic_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " topic_id, board_id, column_id, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             self._task_values(task),
         )
         self._commit()
@@ -307,7 +337,8 @@ class Database:
     def update_task(self, task: Task) -> None:
         self.conn.execute(
             "UPDATE tasks SET title = ?, description = ?, deadline = ?, priority = ?,"
-            " done = ?, completed_on = ?, archived = ?, topic_id = ? WHERE id = ?",
+            " done = ?, completed_on = ?, archived = ?, topic_id = ?, board_id = ?, column_id = ?,"
+            " position = ? WHERE id = ?",
             (*self._task_values(task), task.id),
         )
         self._commit()
@@ -326,6 +357,9 @@ class Database:
             completed.isoformat() if completed else None,
             int(task.archived),
             task.topic_id,
+            task.board_id,
+            task.column_id,
+            task.position if task.board_id is not None else None,
         )
 
     def delete_task(self, task_id: int) -> None:
@@ -336,16 +370,148 @@ class Database:
         self.conn.execute("UPDATE tasks SET archived = ? WHERE id = ?", (int(archived), task_id))
         self._commit()
 
-    def list_tasks(self) -> list[Task]:
+    def list_tasks(self, include_boards: bool = False, board_id: int | None = None) -> list[Task]:
+        """Обычные задачи. Задачи досок (канбан) — отдельно: include_boards или board_id."""
+        where = ""
+        args: tuple = ()
+        if board_id is not None:
+            where, args = " WHERE board_id = ?", (board_id,)
+        elif not include_boards:
+            where = " WHERE board_id IS NULL"
         rows = self.conn.execute(
             "SELECT id, title, description, deadline, priority, done, completed_on, archived,"
-            " topic_id FROM tasks"
+            " topic_id, board_id, column_id, position FROM tasks" + where, args
         )
-        return [Task(r[0], r[1], r[2], _d(r[3]), r[4], bool(r[5]), _d(r[6]), bool(r[7]), r[8])
-                for r in rows]
+        return [Task(r[0], r[1], r[2], _d(r[3]), r[4], bool(r[5]), _d(r[6]), bool(r[7]), r[8],
+                     r[9], r[10], r[11] or 0.0) for r in rows]
 
     def get_task(self, task_id: int) -> Task | None:
-        return next((t for t in self.list_tasks() if t.id == task_id), None)
+        return next((t for t in self.list_tasks(include_boards=True) if t.id == task_id), None)
+
+    # ----- доски (канбан) -----
+
+    DEFAULT_COLUMNS = [("К выполнению", False), ("В работе", False), ("Готово", True)]
+
+    def add_board(self, name: str, color: str = "#0F6E6A") -> int:
+        pos = self.conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM boards").fetchone()[0]
+        cur = self.conn.execute("INSERT INTO boards(name, color, position) VALUES (?, ?, ?)", (name, color, pos))
+        bid = cur.lastrowid
+        for i, (col, done) in enumerate(self.DEFAULT_COLUMNS):
+            self.conn.execute("INSERT INTO board_columns(board_id, name, position, is_done) VALUES (?, ?, ?, ?)",
+                              (bid, col, i, int(done)))
+        self._commit()
+        return bid
+
+    def list_boards(self, include_archived: bool = False) -> list[Board]:
+        rows = self.conn.execute("SELECT id, name, color, position, archived FROM boards"
+                                 + ("" if include_archived else " WHERE archived = 0")
+                                 + " ORDER BY position, id")
+        return [Board(r[0], r[1], r[2], r[3], bool(r[4])) for r in rows]
+
+    def update_board(self, b: Board) -> None:
+        self.conn.execute("UPDATE boards SET name = ?, color = ?, position = ?, archived = ? WHERE id = ?",
+                          (b.name, b.color, b.position, int(b.archived), b.id))
+        self._commit()
+
+    def delete_board(self, board_id: int) -> None:
+        """Доска удаляется вместе со своими колонками, карточками и заметками."""
+        self.conn.execute("DELETE FROM task_subtasks WHERE task_id IN (SELECT id FROM tasks WHERE board_id = ?)",
+                          (board_id,))
+        self.conn.execute("DELETE FROM tasks WHERE board_id = ?", (board_id,))
+        self.conn.execute("DELETE FROM notes WHERE board_id = ?", (board_id,))
+        self.conn.execute("DELETE FROM board_columns WHERE board_id = ?", (board_id,))
+        self.conn.execute("DELETE FROM boards WHERE id = ?", (board_id,))
+        self._commit()
+
+    def list_columns(self, board_id: int) -> list[BoardColumn]:
+        rows = self.conn.execute("SELECT id, board_id, name, position, is_done FROM board_columns"
+                                 " WHERE board_id = ? ORDER BY position, id", (board_id,))
+        return [BoardColumn(r[0], r[1], r[2], r[3], bool(r[4])) for r in rows]
+
+    def add_column(self, board_id: int, name: str) -> int:
+        pos = self.conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM board_columns WHERE board_id = ?",
+                                (board_id,)).fetchone()[0]
+        cur = self.conn.execute("INSERT INTO board_columns(board_id, name, position) VALUES (?, ?, ?)",
+                                (board_id, name, pos))
+        self._commit()
+        return cur.lastrowid
+
+    def update_column(self, c: BoardColumn) -> None:
+        self.conn.execute("UPDATE board_columns SET name = ?, position = ?, is_done = ? WHERE id = ?",
+                          (c.name, c.position, int(c.is_done), c.id))
+        if c.is_done:     # «готовая» колонка одна на доску
+            self.conn.execute("UPDATE board_columns SET is_done = 0 WHERE board_id = ? AND id != ? AND is_done = 1",
+                              (c.board_id, c.id))
+        self._commit()
+
+    def reorder_columns(self, board_id: int, ids: list[int]) -> None:
+        for i, cid in enumerate(ids):
+            self.conn.execute("UPDATE board_columns SET position = ? WHERE id = ? AND board_id = ? AND position != ?",
+                              (i, cid, board_id, i))
+        self._commit()
+
+    def delete_column(self, column_id: int, move_to: int | None) -> None:
+        """Карточки удаляемой колонки переезжают в move_to (или удаляются, если None)."""
+        if move_to is None:
+            self.conn.execute("DELETE FROM tasks WHERE column_id = ?", (column_id,))
+        else:
+            done = self.conn.execute("SELECT is_done FROM board_columns WHERE id = ?", (move_to,)).fetchone()[0]
+            self.conn.execute("UPDATE tasks SET column_id = ?, done = ?, completed_on = CASE WHEN ? THEN"
+                              " COALESCE(completed_on, date('now','localtime')) END WHERE column_id = ?",
+                              (move_to, done, done, column_id))
+        self.conn.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
+        self._commit()
+
+    def add_card(self, board_id: int, column_id: int, title: str, **fields) -> int:
+        """Новая карточка — внизу колонки."""
+        pos = self.conn.execute("SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE column_id = ?",
+                                (column_id,)).fetchone()[0]
+        done = bool(self.conn.execute("SELECT is_done FROM board_columns WHERE id = ?", (column_id,)).fetchone()[0])
+        return self.add_task(Task(0, title, board_id=board_id, column_id=column_id, position=pos, done=done, **fields))
+
+    def move_card(self, task_id: int, column_id: int, index: int) -> None:
+        """Переложить карточку в колонку на место index (0 — сверху). Колонка «Готово» отмечает выполненной."""
+        cards = [t for t in self.cards_in(column_id) if t.id != task_id]
+        index = max(0, min(index, len(cards)))
+        before = cards[index - 1].position if index > 0 else None
+        after = cards[index].position if index < len(cards) else None
+        if before is None and after is None:
+            pos = 1.0
+        elif before is None:
+            pos = after - 1.0
+        elif after is None:
+            pos = before + 1.0
+        else:
+            pos = (before + after) / 2
+            if after - before < 1e-6:          # слишком плотно — перенумеровать колонку
+                for i, c in enumerate(cards):
+                    self.conn.execute("UPDATE tasks SET position = ? WHERE id = ?", (float(i + 1), c.id))
+                return self.move_card(task_id, column_id, index)
+        done = bool(self.conn.execute("SELECT is_done FROM board_columns WHERE id = ?", (column_id,)).fetchone()[0])
+        t = self.get_task(task_id)
+        completed = (t.completed_on or date.today()) if done else None
+        self.conn.execute("UPDATE tasks SET column_id = ?, position = ?, done = ?, completed_on = ? WHERE id = ?",
+                          (column_id, pos, int(done), completed.isoformat() if completed else None, task_id))
+        self._commit()
+
+    def complete_task(self, task_id: int, done: bool = True) -> None:
+        """Отметить выполненной. Карточка доски при этом переезжает в колонку «Готово» (или обратно)."""
+        t = self.get_task(task_id)
+        if t is None:
+            return
+        if t.board_id is not None:
+            cols = self.list_columns(t.board_id)
+            target = next((c for c in cols if c.is_done), None) if done else \
+                next((c for c in cols if not c.is_done), None)
+            if target is not None:
+                self.move_card(task_id, target.id, 0 if done else len(self.cards_in(target.id)))
+                return
+        t.done = done
+        self.update_task(t)
+
+    def cards_in(self, column_id: int) -> list[Task]:
+        return sorted((t for t in self.list_tasks(include_boards=True) if t.column_id == column_id),
+                      key=lambda t: (t.position, t.id))
 
     # ----- темы -----
 
@@ -508,11 +674,13 @@ class Database:
 
     # ----- заметки -----
 
-    def add_note(self, title: str = "", body: str = "", folder_id: int | None = None) -> int:
+    def add_note(self, title: str = "", body: str = "", folder_id: int | None = None,
+                 board_id: int | None = None) -> int:
         now = _now()
         cur = self.conn.execute(
-            "INSERT INTO notes(title, body, created_at, updated_at, folder_id) VALUES (?, ?, ?, ?, ?)",
-            (title, body, now, now, folder_id))
+            "INSERT INTO notes(title, body, created_at, updated_at, folder_id, board_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (title, body, now, now, folder_id, board_id))
         self._commit()
         return cur.lastrowid
 
@@ -533,16 +701,20 @@ class Database:
         self.conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         self._commit()
 
-    _NOTE_COLS = "id, title, body, pinned, created_at, updated_at, folder_id"
+    _NOTE_COLS = "id, title, body, pinned, created_at, updated_at, folder_id, board_id"
 
-    def list_notes(self) -> list[Note]:
-        rows = self.conn.execute(f"SELECT {self._NOTE_COLS} FROM notes")
-        return [Note(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6]) for r in rows]
+    def list_notes(self, board_id: int | None = None) -> list[Note]:
+        """Обычные заметки; с board_id — заметки этой доски."""
+        if board_id is None:
+            rows = self.conn.execute(f"SELECT {self._NOTE_COLS} FROM notes WHERE board_id IS NULL")
+        else:
+            rows = self.conn.execute(f"SELECT {self._NOTE_COLS} FROM notes WHERE board_id = ?", (board_id,))
+        return [Note(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7]) for r in rows]
 
     def get_note(self, note_id: int) -> Note | None:
         r = self.conn.execute(f"SELECT {self._NOTE_COLS} FROM notes WHERE id = ?",
                               (note_id,)).fetchone()
-        return Note(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6]) if r else None
+        return Note(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7]) if r else None
 
     # папки заметок
     def add_folder(self, name: str) -> int:

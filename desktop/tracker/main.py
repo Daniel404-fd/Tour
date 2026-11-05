@@ -126,6 +126,7 @@ def main() -> int:
     state["window"] = window
     window.show()
     code = app.exec()
+    session.db.flush_save()       # отложенная запись — до закрытия базы
     session.db.close()
     server.close()
     return code

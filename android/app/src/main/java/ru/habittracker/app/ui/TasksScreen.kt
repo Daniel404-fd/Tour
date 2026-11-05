@@ -89,7 +89,7 @@ private val STATUSES = listOf("active" to "Активные", "done" to "Вып�
 private const val TOPIC_ALL = -1L
 private const val TOPIC_NONE = 0L
 /** Больше тем — вместо ряда кнопок выпадающий список (иначе ряд приходится долго листать). */
-const val TOPIC_CHIP_LIMIT = 6
+const val TOPIC_CHIP_LIMIT = 15
 
 @Composable
 fun TasksScreen(nav: Nav) {

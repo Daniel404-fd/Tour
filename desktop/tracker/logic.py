@@ -33,6 +33,27 @@ class Task:
     completed_on: date | None = None
     archived: bool = False
     topic_id: int | None = None
+    board_id: int | None = None      # задача-карточка доски (канбан); в обычном списке задач её нет
+    column_id: int | None = None
+    position: float = 0.0
+
+
+@dataclass
+class Board:
+    id: int
+    name: str
+    color: str = "#0F6E6A"
+    position: int = 0
+    archived: bool = False
+
+
+@dataclass
+class BoardColumn:
+    id: int
+    board_id: int
+    name: str
+    position: int = 0
+    is_done: bool = False
 
 
 # ---------- Привычки ----------
@@ -320,6 +341,7 @@ class Note:
     created_at: str = ""
     updated_at: str = ""
     folder_id: int | None = None
+    board_id: int | None = None
 
     @property
     def display_title(self) -> str:

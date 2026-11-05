@@ -44,11 +44,14 @@ TABLES: dict[str, tuple[list[str], dict[str, str]]] = {
                "completed_on", "financial", "target_amount"], {}),
     "goal_steps": (["goal_id", "title", "done", "position"], {"goal_id": "goals"}),
     "goal_contributions": (["goal_id", "day", "amount", "note"], {"goal_id": "goals"}),
+    "boards": (["name", "color", "position", "archived"], {}),
+    "board_columns": (["board_id", "name", "position", "is_done"], {"board_id": "boards"}),
     "tasks": (["title", "description", "deadline", "priority", "done", "completed_on", "archived",
-               "topic_id"], {"topic_id": "topics"}),
+               "topic_id", "board_id", "column_id", "position"],
+              {"topic_id": "topics", "board_id": "boards", "column_id": "board_columns"}),
     "task_subtasks": (["task_id", "title", "done", "position"], {"task_id": "tasks"}),
-    "notes": (["title", "body", "pinned", "created_at", "updated_at", "folder_id"],
-              {"folder_id": "note_folders"}),
+    "notes": (["title", "body", "pinned", "created_at", "updated_at", "folder_id", "board_id"],
+              {"folder_id": "note_folders", "board_id": "boards"}),
     "events": (["title", "start", "end", "all_day", "calendar_id", "color", "description",
                 "location", "freq", "interval", "weekdays", "until", "exdates", "reminder"],
                {"calendar_id": "calendars"}),
@@ -56,7 +59,7 @@ TABLES: dict[str, tuple[list[str], dict[str, str]]] = {
 # Без какой ссылки запись не имеет смысла (иначе ссылка просто обнуляется).
 REQUIRED_REFS = {("habit_marks", "habit_id"), ("goal_steps", "goal_id"),
                  ("goal_contributions", "goal_id"), ("events", "calendar_id"),
-                 ("task_subtasks", "task_id")}
+                 ("task_subtasks", "task_id"), ("board_columns", "board_id")}
 
 
 def now_ts() -> str:
@@ -220,22 +223,25 @@ def merge(conn: sqlite3.Connection, payload: dict, stats: MergeStats | None = No
             if not ok:
                 continue
             cur = local.get(uid)
-            values = [data.get(f) for f in fields]
+            # поля, которых нет в файле (его записала прежняя версия программы), не трогаем:
+            # при вставке берётся значение по умолчанию, при обновлении остаётся наше
+            present = [f for f in fields if f in rec["data"]]
+            values = [data.get(f) for f in present]
             if cur is None:
                 if table == "habit_marks":
                     # та же отметка могла появиться независимо — естественный ключ
                     conn.execute("DELETE FROM habit_marks WHERE habit_id = ? AND day = ? AND sync_uid IS NOT ?",
                                  (data["habit_id"], data["day"], uid))
-                cols = ", ".join(_q(f) for f in fields)
-                ph = ", ".join("?" for _ in fields)
-                conn.execute(f"INSERT INTO {table} ({cols}, sync_uid, sync_ts) VALUES ({ph}, ?, ?)",
+                cols = "".join(_q(f) + ", " for f in present)
+                ph = "".join("?, " for _ in present)
+                conn.execute(f"INSERT INTO {table} ({cols}sync_uid, sync_ts) VALUES ({ph}?, ?)",
                              (*values, uid, ts))
                 stats.added += 1
             elif ts > (cur[1] or "") or (
                     ts == cur[1] and _digest(rec["data"]) > _digest(_local_canon(conn, table, key, cur[0]))):
                 # при одинаковом времени побеждает одна и та же версия на всех устройствах
-                sets = ", ".join(f"{_q(f)} = ?" for f in fields)
-                conn.execute(f"UPDATE {table} SET {sets}, sync_ts = ? WHERE {key} = ?", (*values, ts, cur[0]))
+                sets = "".join(f"{_q(f)} = ?, " for f in present)
+                conn.execute(f"UPDATE {table} SET {sets}sync_ts = ? WHERE {key} = ?", (*values, ts, cur[0]))
                 stats.updated += 1
 
     # удаления (сначала «дети», чтобы не задеть каскадом лишнего)

@@ -324,6 +324,60 @@ class Page(QWidget):
         return _Keep()
 
 
+class ChipStrip(QWidget):
+    """Ряд «плашек», который не сжимает текст: при узком окне его листают —
+    колесом мыши или тонкой полосой прокрутки снизу."""
+
+    def __init__(self):
+        super().__init__()
+        from PySide6.QtWidgets import QScrollArea, QSizePolicy
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.area = QScrollArea()
+        self.area.setObjectName("chipStrip")
+        self.area.setFrameShape(QFrame.NoFrame)
+        self.area.setWidgetResizable(True)
+        self.area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        inner = QWidget()
+        inner.setObjectName("chipStripInner")
+        self.row = QHBoxLayout(inner)
+        self.row.setContentsMargins(0, 2, 0, 2)
+        self.row.setSpacing(6)
+        self.area.setWidget(inner)
+        self.area.viewport().installEventFilter(self)
+        outer.addWidget(self.area)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._drag_x = None
+
+    def addWidget(self, wdg: QWidget) -> None:
+        from PySide6.QtWidgets import QSizePolicy
+        wdg.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)   # текст плашки никогда не обрезается
+        self.row.addWidget(wdg)
+        self._fit()
+
+    def addStretch(self) -> None:
+        self.row.addStretch()
+
+    def clear(self) -> None:
+        clear_layout(self.row)
+
+    def _fit(self) -> None:
+        h = max((self.row.itemAt(i).widget().sizeHint().height() for i in range(self.row.count())
+                 if self.row.itemAt(i).widget()), default=30) + 6
+        bar = self.area.horizontalScrollBar().sizeHint().height()
+        self.setFixedHeight(h + bar)     # место под полосу есть всегда — ряд не «прыгает»
+
+    def eventFilter(self, obj, e) -> bool:
+        from PySide6.QtCore import QEvent
+        bar = self.area.horizontalScrollBar()
+        if e.type() == QEvent.Wheel and bar.maximum() > 0:
+            d = e.angleDelta()
+            bar.setValue(bar.value() - (d.y() or d.x()))
+            return True
+        return False
+
+
 def chip(text: str, checked: bool = False) -> QPushButton:
     btn = QPushButton(text)
     btn.setProperty("kind", "chip")
@@ -345,3 +399,18 @@ def dot_icon(color: str, size: int = 10):
     p.drawEllipse(QRectF(1, 1, size - 2, size - 2))
     p.end()
     return QIcon(pm)
+
+
+def remember_splitter(split, db, key: str, default: list[int]) -> None:
+    """Размеры частей QSplitter запоминаются (ширину блоков можно тянуть мышью за границу)."""
+    from PySide6.QtCore import QTimer
+    try:
+        sizes = [int(x) for x in db.get_pref(key, "").split(",") if x]
+    except ValueError:
+        sizes = []
+    split.setSizes(sizes if len(sizes) == split.count() and sum(sizes) > 0 else default)
+    timer = QTimer(split)
+    timer.setSingleShot(True)
+    timer.setInterval(500)
+    timer.timeout.connect(lambda: db.set_pref(key, ",".join(str(s) for s in split.sizes())))
+    split.splitterMoved.connect(lambda *_: timer.start())

@@ -18,9 +18,11 @@ from PySide6.QtGui import QColor, QFont, QFontDatabase, QGuiApplication, QPalett
 from PySide6.QtWidgets import QApplication, QStyleFactory
 
 LIGHT = {
-    "bg": "#F3F2EE", "surface": "#FFFFFF", "surface2": "#F7F6F3", "hover": "#EFEDE7",
-    "text": "#1A1C1E", "text2": "#4D5156", "text3": "#666A70",
-    "border": "#E1DFD8", "border_strong": "#CFCCC3",
+    "bg": "#FBFBFA", "surface": "#FFFFFF", "surface2": "#F7F7F5", "hover": "#F1F1EF",
+    "text": "#2F2E2B", "text2": "#55534E", "text3": "#6E6C67",
+    "border": "#EAE9E6", "border_strong": "#D9D7D2",
+    "sidebar_neutral": "#F7F7F5", "sidebar_neutral_text": "#3B3A36",
+    "sidebar_neutral_hover": "#ECECEA", "sidebar_neutral_sel": "#E6E5E2",
     "light": "#FFFFFF", "shadow": "#CFCCC3", "dark": "#9C978C",
     "accent": "#4338CA", "accent_hover": "#3730A3", "accent_text": "#FFFFFF",
     "accent_soft": "#E8E7FB", "accent_on_soft": "#2E2795",
@@ -33,9 +35,11 @@ LIGHT = {
 }
 
 DARK = {
-    "bg": "#151719", "surface": "#1E2124", "surface2": "#24282C", "hover": "#2A2E33",
-    "text": "#ECEDEE", "text2": "#B3B8BD", "text3": "#9AA0A6",
-    "border": "#30343A", "border_strong": "#41464D",
+    "bg": "#191919", "surface": "#202020", "surface2": "#252525", "hover": "#2C2C2C",
+    "text": "#E9E9E7", "text2": "#BDBCB8", "text3": "#A09F9B",
+    "border": "#2F2F2F", "border_strong": "#444444",
+    "sidebar_neutral": "#202020", "sidebar_neutral_text": "#D6D5D1",
+    "sidebar_neutral_hover": "#2C2C2C", "sidebar_neutral_sel": "#333333",
     "light": "#41464D", "shadow": "#0E0F10", "dark": "#0A0A0B",
     "accent": "#8B85F7", "accent_hover": "#A09BF9", "accent_text": "#14123A",
     "accent_soft": "#2B2950", "accent_on_soft": "#CFCCFF",
@@ -62,7 +66,7 @@ class _Theme(QObject):
         self.t = dict(LIGHT)
         # Оформление пользователя (settings.json → "appearance"):
         # primary — основной цвет (панель, кнопки, ссылки), accent — цвет «выполнено/прогресс»,
-        # sidebar — {"mode": "primary" | "color" | "image", "color": "#…", "image": путь, "dim": 0..0.8},
+        # sidebar — {"mode": "neutral" (по умолчанию) | "primary" | "color" | "image", "color": "#…", "image": путь, "dim": 0..0.8},
         # mode — "system" | "light" | "dark".
         self.custom: dict = {}
 
@@ -157,7 +161,13 @@ def derive(base: dict, dark: bool, custom: dict) -> dict:
         t["accent_on_soft"] = _shift_light(t["accent"], t["accent_soft"], 5.0, lighter=dark)
     # боковая панель
     sb = custom.get("sidebar") or {}
-    mode = sb.get("mode", "primary")
+    mode = sb.get("mode", "neutral")
+    if mode == "neutral":
+        # как в Notion: спокойная светлая (в тёмной теме — тёмная) панель, цвет — только у акцентов
+        t.update(sidebar_bg=t["sidebar_neutral"], sidebar_text=t["sidebar_neutral_text"],
+                 sidebar_hover=t["sidebar_neutral_hover"], sidebar_sel=t["sidebar_neutral_sel"],
+                 sidebar_image="", sidebar_dim=0.0, sidebar_icon=t["text3"])
+        return t
     t["sidebar_image"] = ""
     t["sidebar_dim"] = 0.0
     if mode == "color" and sb.get("color"):
@@ -173,6 +183,7 @@ def derive(base: dict, dark: bool, custom: dict) -> dict:
     t["sidebar_text"] = white if light_text else ink
     t["sidebar_hover"] = "rgba(255, 255, 255, 0.12)" if light_text else "rgba(0, 0, 0, 0.07)"
     t["sidebar_sel"] = "rgba(255, 255, 255, 0.22)" if light_text else "rgba(0, 0, 0, 0.12)"
+    t["sidebar_icon"] = t["sidebar_text"]
     return t
 
 
@@ -216,17 +227,38 @@ def _qss(t: dict) -> str:
     QToolTip {{ background: {t['tip']}; color: {t['tip_text']}; border: none; padding: 5px 8px;
                 border-radius: 6px; }}
 
-    /* ---- навигация: бирюзовая панель ---- */
-    QListWidget#sidebar {{ background: transparent; border: none; padding: 16px 10px; outline: none; }}
+    /* ---- навигация: боковая панель (сворачивается до иконок, ширину можно тянуть) ---- */
+    QListWidget#sidebar {{ background: transparent; border: none; padding: 8px 8px; outline: none; }}
     QListWidget#sidebar:focus {{ border: none; }}
-    QListWidget#sidebar::item {{ height: 36px; padding-left: 10px; color: {t['sidebar_text']};
-                                 margin-bottom: 2px; border-radius: 8px; }}
+    QListWidget#sidebar::item {{ height: 32px; padding-left: 8px; color: {t['sidebar_text']};
+                                 margin-bottom: 1px; border-radius: 6px; }}
+    QListWidget#sidebar[collapsed="true"]::item {{ padding-left: 13px; }}
+    QLabel#appTitle {{ font-weight: 600; font-size: 10.5pt; }}
+    QToolButton#collapseBtn {{ border: none; border-radius: 6px; padding: 4px; background: transparent; }}
+    QToolButton#collapseBtn:hover {{ background: {t['sidebar_hover']}; }}
+    QSplitter::handle {{ background: {t['border']}; }}
+    QSplitter::handle:hover {{ background: {t['teal']}; }}
+    QSplitter#mainSplit::handle {{ background: {t['border']}; }}
+    QSplitter#pageSplit::handle {{ background: transparent; }}
+    QSplitter#pageSplit::handle:hover {{ background: {t['teal_soft']}; border-radius: 4px; }}
+
+    /* ---- доски (канбан) ---- */
+    QFrame#kanbanColumn {{ background: {t['surface2']}; border: 1px solid {t['border']}; border-radius: 10px; }}
+    QListWidget#kanbanList {{ background: transparent; border: none; }}
+    QListWidget#kanbanList::item {{ background: transparent; border: none; padding: 0; margin: 0; }}
+    QListWidget#kanbanList::item:selected {{ background: transparent; }}
+    QFrame#kanbanCard {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 8px; }}
+    QFrame#kanbanCard[sel="true"] {{ border: 1px solid {t['teal']}; background: {t['surface']}; }}
+    QFrame#kanbanCard:hover {{ border-color: {t['border_strong']}; }}
+    QLineEdit#kanbanAdd {{ background: transparent; border: 1px dashed {t['border_strong']}; color: {t['text2']}; }}
+    QLineEdit#kanbanAdd:focus {{ background: {t['surface']}; border: 1px solid {t['teal']}; color: {t['text']}; }}
+    QScrollArea#kanbanArea, QWidget#kanbanHolder {{ background: transparent; }}
     QListWidget#sidebar::item:hover {{ background: {t['sidebar_hover']}; }}
     QListWidget#sidebar::item:selected {{ background: {t['sidebar_sel']}; color: {t['sidebar_text']};
                                           font-weight: 600; }}
 
     /* ---- типографика ---- */
-    QLabel[role="title"] {{ font-size: 18pt; font-weight: 600; }}
+    QLabel[role="title"] {{ font-size: 20pt; font-weight: 700; }}
     QLabel[role="subtitle"] {{ color: {t['text2']}; }}
     QLabel[role="section"] {{ font-size: 10.5pt; font-weight: 600; }}
     QLabel[role="secondary"] {{ color: {t['text2']}; }}
@@ -338,6 +370,8 @@ def _qss(t: dict) -> str:
 
     QScrollArea {{ background: transparent; border: none; }}
     QScrollArea > QWidget > QWidget {{ background: transparent; }}
+    QScrollArea#chipStrip, QWidget#chipStripInner {{ background: transparent; }}
+    QScrollArea#chipStrip QScrollBar:horizontal {{ height: 6px; margin: 0; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: {t['border_strong']}; border-radius: 4px; min-height: 30px; }}
     QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}

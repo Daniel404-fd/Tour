@@ -4,6 +4,7 @@ from datetime import date
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
+    QSplitter,
     QButtonGroup, QCheckBox, QDateEdit, QDialog, QFormLayout, QFrame, QHBoxLayout, QInputDialog,
     QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea, QVBoxLayout,
     QWidget,
@@ -204,12 +205,13 @@ class GoalsPage(w.Page):
         chips.addStretch()
         self.content.addLayout(chips)
 
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        body = QSplitter(Qt.Horizontal)
+        body.setObjectName("pageSplit")
+        body.setHandleWidth(12)
         # список слева
         self.list_scroll = QScrollArea()
         self.list_scroll.setWidgetResizable(True)
-        self.list_scroll.setFixedWidth(340)
+        self.list_scroll.setMinimumWidth(240)
         holder = QWidget()
         self.list = QVBoxLayout(holder)
         self.list.setContentsMargins(0, 0, 6, 0)
@@ -223,8 +225,11 @@ class GoalsPage(w.Page):
         self.detail = QVBoxLayout(dholder)
         self.detail.setContentsMargins(0, 0, 0, 0)
         self.detail_scroll.setWidget(dholder)
-        body.addWidget(self.detail_scroll, 1)
-        self.content.addLayout(body, 1)
+        body.addWidget(self.detail_scroll)
+        body.setStretchFactor(1, 1)
+        body.setChildrenCollapsible(False)
+        w.remember_splitter(body, db, "split_goals", [340, 700])
+        self.content.addWidget(body, 1)
 
     def _filter_changed(self, btn) -> None:
         self.filter = btn.property("value")

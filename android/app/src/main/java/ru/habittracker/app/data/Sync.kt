@@ -182,8 +182,10 @@ object Sync {
                 if (localDeleted != null && localDeleted >= ts) continue      // у нас удалено позже
                 val values = mutableMapOf<String, Any?>()
                 var ok = true
+                // поля, которых нет в файле (прежняя версия программы), не трогаем
                 for (f in fields) {
-                    var v: Any? = if (data.has(f)) data.get(f) else JSONObject.NULL
+                    if (!data.has(f)) continue
+                    var v: Any? = data.get(f)
                     val ref = refs[f]
                     if (ref != null && v != JSONObject.NULL) {
                         val id = db.rawQuery("SELECT id FROM $ref WHERE sync_uid = ?", arrayOf(v.toString())).use { c -> if (c.moveToFirst()) c.getLong(0) else null }
@@ -197,7 +199,7 @@ object Sync {
                     if (table == "habit_marks") db.execSQL("DELETE FROM habit_marks WHERE habit_id = ? AND day = ? AND sync_uid IS NOT ?",
                         arrayOf(values["habit_id"], values["day"], uid))
                     val cv = ContentValues()
-                    for (f in fields) put(cv, f, values[f])
+                    for ((f, v) in values) put(cv, f, v)
                     cv.put("sync_uid", uid); cv.put("sync_ts", ts)
                     db.insertOrThrow(table, null, cv)
                     stats.added++
@@ -206,7 +208,7 @@ object Sync {
                     val wins = ts > curTs || (ts == curTs && digest(data) > digest(localCanon(db, table, key, cur.first)))
                     if (wins) {
                         val cv = ContentValues()
-                        for (f in fields) put(cv, f, values[f])
+                        for ((f, v) in values) put(cv, f, v)
                         cv.put("sync_ts", ts)
                         db.update(table, cv, "$key = ?", arrayOf(cur.first.toString()))
                         stats.updated++

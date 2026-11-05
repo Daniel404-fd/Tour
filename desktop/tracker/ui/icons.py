@@ -85,6 +85,18 @@ def _path(name: str) -> tuple[QPainterPath, QPainterPath | None]:
             fill.addRoundedRect(QRectF(x - 1.3, y - 1.3, 2.6, 2.6), 0.6, 0.6)
     elif name == "chevron-left":
         p.moveTo(14.5, 6); p.lineTo(8.5, 12); p.lineTo(14.5, 18)
+    elif name == "chevrons-left":
+        p.moveTo(12, 6.5); p.lineTo(6.5, 12); p.lineTo(12, 17.5)
+        p.moveTo(18, 6.5); p.lineTo(12.5, 12); p.lineTo(18, 17.5)
+    elif name == "chevrons-right":
+        p.moveTo(6, 6.5); p.lineTo(11.5, 12); p.lineTo(6, 17.5)
+        p.moveTo(12, 6.5); p.lineTo(17.5, 12); p.lineTo(12, 17.5)
+    elif name == "boards":  # три колонки канбана с карточками
+        p.addRoundedRect(QRectF(3.5, 4, 17, 16), 2.2, 2.2)
+        p.moveTo(9.2, 4); p.lineTo(9.2, 20); p.moveTo(14.8, 4); p.lineTo(14.8, 20)
+        fill = QPainterPath()
+        for x, y, h in ((5, 6, 4), (5, 11.5, 3), (10.7, 6, 5.5), (16.3, 6, 3)):
+            fill.addRoundedRect(QRectF(x, y, 2.7, h), 0.7, 0.7)
     elif name == "chevron-down":
         p.moveTo(7, 10); p.lineTo(12, 15); p.lineTo(17, 10)
     elif name == "chevron-right":

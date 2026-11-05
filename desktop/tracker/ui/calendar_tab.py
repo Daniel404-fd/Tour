@@ -7,6 +7,7 @@ from datetime import date, datetime, time, timedelta
 from PySide6.QtCore import QDate, QPointF, QRectF, QSize, Qt, QTime, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
+    QSplitter,
     QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout,
     QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QPushButton,
     QRadioButton, QScrollArea, QSizePolicy, QSpinBox, QTimeEdit, QVBoxLayout, QWidget,
@@ -1008,8 +1009,10 @@ class CalendarPage(w.Page):
         for x in (self.zoom_box, today_btn, prev_b, next_b, seg_w, create):
             self.header.add_action(x)
 
-        body = QHBoxLayout()
-        body.setSpacing(16)
+        # мини-календарь | сетка: левую колонку можно сузить или спрятать, потянув границу
+        body = QSplitter(Qt.Horizontal)
+        body.setObjectName("pageSplit")
+        body.setHandleWidth(12)
         # ---- левая колонка ----
         left = QVBoxLayout()
         left.setSpacing(10)
@@ -1034,7 +1037,7 @@ class CalendarPage(w.Page):
                                                     self.refresh()))
         left.addWidget(self.show_tasks)
         left.addStretch()
-        lw = QWidget(); lw.setLayout(left); lw.setFixedWidth(230)
+        lw = QWidget(); lw.setLayout(left); lw.setMinimumWidth(200); lw.setMaximumWidth(320)
         left.setContentsMargins(0, 0, 0, 0)
         body.addWidget(lw)
 
@@ -1066,8 +1069,11 @@ class CalendarPage(w.Page):
         wb.addWidget(self.grid_scroll, 1)
         pl.addWidget(self.week_box, 1)
         pl.addWidget(self.month_view, 1)
-        body.addWidget(self.panel, 1)
-        self.content.addLayout(body, 1)
+        body.addWidget(self.panel)
+        body.setStretchFactor(1, 1)
+        body.setCollapsible(1, False)
+        w.remember_splitter(body, db, "split_calendar", [230, 900])
+        self.content.addWidget(body, 1)
 
         for v in (self.grid, self.all_day_bar, self.month_view):
             v.itemClicked.connect(self.open_item)
@@ -1190,7 +1196,7 @@ class CalendarPage(w.Page):
                                   else EVENT_COLORS[0][0])
             items.append(Item(occ=o, color=c))
         if self.show_tasks.isChecked():
-            for t in self.db.list_tasks():
+            for t in self.db.list_tasks(include_boards=True):
                 if t.deadline and not t.done and not t.archived and days[0] <= t.deadline <= days[-1]:
                     items.append(Item(task=t))
         return items
