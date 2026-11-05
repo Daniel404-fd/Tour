@@ -65,16 +65,17 @@ data class Tokens(
 fun hex(s: String) = Color(android.graphics.Color.parseColor(s))
 
 val LightTokens = Tokens(
-    bg = hex("#F3F2EE"), surface = hex("#FFFFFF"), surface2 = hex("#F7F6F3"), text = hex("#1A1C1E"),
-    text2 = hex("#3F4348"), text3 = hex("#565A60"), border = hex("#E1DFD8"), borderStrong = hex("#BDB9AF"),
+    // спокойная «бумажная» палитра, как в Notion: почти белый фон, тёплый графитовый текст, тонкие границы
+    bg = hex("#FBFBFA"), surface = hex("#FFFFFF"), surface2 = hex("#F7F7F5"), text = hex("#2F2E2B"),
+    text2 = hex("#45433F"), text3 = hex("#5F5D58"), border = hex("#EAE9E6"), borderStrong = hex("#C9C7C1"),
     accent = hex("#4338CA"), accentText = hex("#FFFFFF"), accentSoft = hex("#E8E7FB"),
     teal = hex("#0F6E6A"), tealText = hex("#FFFFFF"), tealSoft = hex("#E1F0EE"), tealOnSoft = hex("#0B4F4C"),
     link = hex("#0F6E6A"), danger = hex("#B42318"), dangerSoft = hex("#FDECEA"), warn = hex("#8A5A00"),
     warnSoft = hex("#FFF3D6"), empty = hex("#E6E4DE"), todayBg = hex("#E7F3F2"), now = hex("#D93025"),
 )
 val DarkTokens = Tokens(
-    bg = hex("#151719"), surface = hex("#1E2124"), surface2 = hex("#24282C"), text = hex("#ECEDEE"),
-    text2 = hex("#CDD1D5"), text3 = hex("#AFB5BB"), border = hex("#34383E"), borderStrong = hex("#5A6068"),
+    bg = hex("#191919"), surface = hex("#202020"), surface2 = hex("#262626"), text = hex("#E9E9E7"),
+    text2 = hex("#CFCECA"), text3 = hex("#ABAAA6"), border = hex("#2F2F2F"), borderStrong = hex("#555555"),
     accent = hex("#8B85F7"), accentText = hex("#14123A"), accentSoft = hex("#2B2950"),
     teal = hex("#0F6E6A"), tealText = hex("#FFFFFF"), tealSoft = hex("#1D4340"), tealOnSoft = hex("#A6EBE4"),
     link = hex("#5FD1C9"), danger = hex("#FF8A80"), dangerSoft = hex("#3D2220"), warn = hex("#F2C46D"),
@@ -259,4 +260,4 @@ fun Dot(color: Color, size: Dp = 8.dp) = Box(Modifier.size(size).clip(CircleShap
 @Composable
 fun EmptyText(text: String) = Text(text, color = tok.text2, fontSize = 15.sp, modifier = Modifier.padding(PaddingValues(vertical = 24.dp, horizontal = 8.dp)))
 
-val Header = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+val Header = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp)

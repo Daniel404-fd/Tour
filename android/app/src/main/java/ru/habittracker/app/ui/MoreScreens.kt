@@ -421,7 +421,7 @@ fun NotesScreen(nav: Nav) {
 }
 
 @Composable
-private fun NoteEditor(id: Long, folders: List<ru.habittracker.app.data.NoteFolder>, onBack: () -> Unit) {
+internal fun NoteEditor(id: Long, folders: List<ru.habittracker.app.data.NoteFolder>, onBack: () -> Unit) {
     val repo = App.instance.repo
     val note = remember(id) { repo.note(id) }
     if (note == null) { onBack(); return }
@@ -515,7 +515,7 @@ fun SettingsScreen(nav: Nav) {
         AppearanceCard()
         Card("Где хранятся данные") {
             Secondary("Все данные лежат только на телефоне, в личной папке приложения. Если включена синхронизация — ещё и на вашем Яндекс Диске, в папке «HabitTracker-sync».")
-            Caption("Трекер для Android, версия 1.2.0")
+            Caption("Трекер для Android, версия 1.3.0")
         }
         Spacer(Modifier.height(24.dp))
     }

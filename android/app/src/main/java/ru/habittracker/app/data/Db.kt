@@ -21,6 +21,18 @@ class Db(context: Context, name: String? = "tracker.sqlite3") :
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
 
+    /** Колонки, которых нет в базах прежних версий (как _migrate в программе для ПК). */
+    private fun migrate(db: SQLiteDatabase) {
+        fun cols(t: String) = db.rawQuery("PRAGMA table_info($t)", null).use { c -> buildSet { while (c.moveToNext()) add(c.getString(1)) } }
+        if ("board_id" !in cols("tasks")) {
+            db.execSQL("ALTER TABLE tasks ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
+            db.execSQL("ALTER TABLE tasks ADD COLUMN column_id INTEGER REFERENCES board_columns(id) ON DELETE SET NULL")
+            db.execSQL("ALTER TABLE tasks ADD COLUMN position REAL")
+        }
+        if ("board_id" !in cols("notes"))
+            db.execSQL("ALTER TABLE notes ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
+    }
+
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         if (!db.isReadOnly) {
@@ -30,6 +42,7 @@ class Db(context: Context, name: String? = "tracker.sqlite3") :
                 val has = c.moveToFirst(); c.close()
                 if (!has) db.execSQL("INSERT INTO calendars(name, color) VALUES ('Личное', '#0B6E69')")
                 onCreate(db)                      // новые таблицы для баз прежних версий (всё IF NOT EXISTS)
+                migrate(db)
                 SyncSchema.install(db)
                 db.setTransactionSuccessful()
             } finally {
@@ -61,6 +74,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     completed_on TEXT,
     archived     INTEGER NOT NULL DEFAULT 0,
     topic_id     INTEGER REFERENCES topics(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS boards (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name     TEXT    NOT NULL,
+    color    TEXT    NOT NULL DEFAULT '#0F6E6A',
+    position INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS board_columns (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    name     TEXT    NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    is_done  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS topics (
     id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,17 +188,20 @@ object SyncSchema {
             "completed_on", "financial", "target_amount") to emptyMap()),
         "goal_steps" to (listOf("goal_id", "title", "done", "position") to mapOf("goal_id" to "goals")),
         "goal_contributions" to (listOf("goal_id", "day", "amount", "note") to mapOf("goal_id" to "goals")),
+        "boards" to (listOf("name", "color", "position", "archived") to emptyMap()),
+        "board_columns" to (listOf("board_id", "name", "position", "is_done") to mapOf("board_id" to "boards")),
         "tasks" to (listOf("title", "description", "deadline", "priority", "done", "completed_on",
-            "archived", "topic_id") to mapOf("topic_id" to "topics")),
+            "archived", "topic_id", "board_id", "column_id", "position") to
+            mapOf("topic_id" to "topics", "board_id" to "boards", "column_id" to "board_columns")),
         "task_subtasks" to (listOf("task_id", "title", "done", "position") to mapOf("task_id" to "tasks")),
-        "notes" to (listOf("title", "body", "pinned", "created_at", "updated_at", "folder_id") to
-            mapOf("folder_id" to "note_folders")),
+        "notes" to (listOf("title", "body", "pinned", "created_at", "updated_at", "folder_id", "board_id") to
+            mapOf("folder_id" to "note_folders", "board_id" to "boards")),
         "events" to (listOf("title", "start", "end", "all_day", "calendar_id", "color", "description",
             "location", "freq", "interval", "weekdays", "until", "exdates", "reminder") to
             mapOf("calendar_id" to "calendars")),
     )
     val REQUIRED_REFS = setOf("habit_marks.habit_id", "goal_steps.goal_id",
-        "goal_contributions.goal_id", "events.calendar_id", "task_subtasks.task_id")
+        "goal_contributions.goal_id", "events.calendar_id", "task_subtasks.task_id", "board_columns.board_id")
 
     fun install(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE IF NOT EXISTS sync_tombstones (uid TEXT PRIMARY KEY, tbl TEXT NOT NULL, ts TEXT NOT NULL)")

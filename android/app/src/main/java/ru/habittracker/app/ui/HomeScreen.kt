@@ -49,7 +49,8 @@ fun HomeScreen(nav: Nav) {
     val today = LocalDate.now()
     val habits = useData { repo.habits() }
     val marks = useData { repo.allMarks() }
-    val tasks = useData { repo.tasks() }
+    val tasks = useData { repo.tasks(includeBoards = true) }    // и карточки досок — у них тоже бывают сроки
+    val boards = useData { repo.boards(includeArchived = true).associateBy { it.id } }
     val topics = useData { repo.topics().associateBy { it.id } }
     val calendars = useData { repo.calendars().associateBy { it.id } }
     val occs = useData {
@@ -130,13 +131,17 @@ fun HomeScreen(nav: Nav) {
                 Caption("Просроченные и со сроком на " + when (period) { 4 -> "ближайшие 4 дня"; 7 -> "ближайшую неделю"; else -> "ближайшие две недели" })
                 if (upcoming.isEmpty()) Secondary("На ближайшие дни сроков нет.")
                 upcoming.take(10).forEach { task ->
-                    Row(Modifier.fillMaxWidth().clickable { nav.taskId = task.id; nav.go("tasks") }, verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(false, { repo.updateTask(task.copy(done = true)) },
+                    Row(Modifier.fillMaxWidth().clickable {
+                        if (task.boardId != null) { nav.boardId = task.boardId; nav.cardId = task.id; nav.go("boards") }
+                        else { nav.taskId = task.id; nav.go("tasks") }
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(false, { repo.completeTask(task.id) },
                             colors = CheckboxDefaults.colors(checkedColor = t.accent))
                         Column(Modifier.weight(1f)) {
                             Text(task.title, color = t.text, fontWeight = if (task.priority == PRIORITY_HIGH) FontWeight.SemiBold else FontWeight.Normal)
-                            topics[task.topicId]?.let { tp ->
-                                Row(verticalAlignment = Alignment.CenterVertically) { Dot(hex(tp.color), 7.dp); Spacer(Modifier.width(4.dp)); Caption(tp.name) }
+                            val labels = listOfNotNull(boards[task.boardId]?.let { it.name to it.color }, topics[task.topicId]?.let { it.name to it.color })
+                            if (labels.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
+                                labels.forEach { (n, c) -> Dot(hex(c), 7.dp); Spacer(Modifier.width(4.dp)); Caption("$n  ") }
                             }
                         }
                         subs[task.id]?.let { st -> Caption("${st.count { it.done }}/${st.size}  ", modifier = Modifier.padding(end = 4.dp)) }

@@ -69,7 +69,7 @@ fun HabitsScreen() {
             if (habits.isEmpty()) item {
                 EmptyText(if (archive) "В архиве пусто." else "Привычек пока нет. Нажмите «+», чтобы добавить — например, «Зарядка».")
             }
-            items(habits, key = { it.id }) { h -> HabitCard(h, marks[h.id] ?: emptySet(), today) }
+            items(habits, key = { it.id }) { h -> Box(Modifier.animateItem()) { HabitCard(h, marks[h.id] ?: emptySet(), today) } }
             item { Spacer(Modifier.height(88.dp)) }
         }
         if (!archive) FloatingActionButton(onClick = { adding = true }, containerColor = t.teal, contentColor = t.tealText,

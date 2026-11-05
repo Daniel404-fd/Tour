@@ -27,6 +27,10 @@ def make(out: Path):
         g = db.add_goal(Goal(0, "Отпуск", financial=True, target_amount=100000.0))
         db.add_contribution(g, 2500.5, date(2026, 1, 3), "аванс")
         db.add_step(g, "Выбрать страну")
+        b = db.add_board("Работа 1", "#1D4ED8")
+        cols = db.list_columns(b)
+        db.add_card(b, cols[1].id, "Ревью договора")
+        db.add_note("Контакты", "Иван", board_id=b)
         f = db.add_folder("Идеи")
         db.add_note("Ёлка", "Купить игрушки", folder_id=f)
         cal = db.list_calendars()[0].id
@@ -52,6 +56,13 @@ def check(src: Path):
         g = next(x for x in db.list_goals() if x.title == "Машина")
         assert abs(db.saved_amounts()[g.id] - 1000.0) < 0.01
         assert [c.name for c in db.list_calendars()].count("Личное") == 1, "основной календарь задвоился"
+        [b] = db.list_boards()
+        assert b.name == "Фриланс"
+        cols = db.list_columns(b.id)
+        [card] = db.list_tasks(board_id=b.id)
+        assert card.title == "Логотип" and card.column_id == cols[2].id and card.done
+        assert all(t.board_id is None for t in db.list_tasks())
+        assert [n.title for n in db.list_notes(board_id=b.id)] == ["Бриф"]
     print("ok: Android → ПК")
 
 

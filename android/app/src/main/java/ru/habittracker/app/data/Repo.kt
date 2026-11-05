@@ -74,20 +74,104 @@ class Repo(val helper: Db) {
         exec("DELETE FROM topics WHERE id = ?", id)
     }
 
-    fun tasks(): List<Task> = query("SELECT id, title, description, deadline, priority, done, completed_on, archived, topic_id FROM tasks") {
-        Task(it.getLong(0), it.getString(1), it.getString(2), d(it.str(3)), it.getInt(4), it.bool(5), d(it.str(6)), it.bool(7), it.lng(8))
+    /** Обычные задачи. Карточки досок — tasks(includeBoards = true) или boardTasks(). */
+    fun tasks(includeBoards: Boolean = false): List<Task> = query("SELECT id, title, description, deadline, priority, done, completed_on, archived, topic_id, board_id, column_id, position FROM tasks" +
+        if (includeBoards) "" else " WHERE board_id IS NULL") {
+        Task(it.getLong(0), it.getString(1), it.getString(2), d(it.str(3)), it.getInt(4), it.bool(5), d(it.str(6)), it.bool(7), it.lng(8),
+            it.lng(9), it.lng(10), if (it.isNull(11)) 0.0 else it.getDouble(11))
     }
-    fun task(id: Long) = tasks().firstOrNull { it.id == id }
+    fun task(id: Long) = tasks(includeBoards = true).firstOrNull { it.id == id }
+    fun boardTasks(boardId: Long) = tasks(includeBoards = true).filter { it.boardId == boardId }
 
     private fun taskValues(t: Task): ContentValues {
         val completed = if (t.done) (t.completedOn ?: LocalDate.now()) else null
         return cv("title" to t.title, "description" to t.description, "deadline" to t.deadline,
             "priority" to t.priority, "done" to t.done, "completed_on" to completed,
-            "archived" to t.archived, "topic_id" to t.topicId)
+            "archived" to t.archived, "topic_id" to t.topicId, "board_id" to t.boardId, "column_id" to t.columnId,
+            "position" to if (t.boardId != null) t.position else null)
     }
     fun addTask(t: Task) = insert("tasks", taskValues(t))
     fun updateTask(t: Task) { db.update("tasks", taskValues(t), "id = ?", arrayOf(t.id.toString())); changed() }
     fun deleteTask(id: Long) = exec("DELETE FROM tasks WHERE id = ?", id)
+
+    // ---------------------------------------------------------------- доски (канбан), как на ПК
+    fun boards(includeArchived: Boolean = false): List<Board> =
+        query("SELECT id, name, color, position, archived FROM boards" + (if (includeArchived) "" else " WHERE archived = 0") + " ORDER BY position, id") {
+            Board(it.getLong(0), it.getString(1), it.getString(2), it.getInt(3), it.bool(4))
+        }
+    fun addBoard(name: String, color: String): Long {
+        val pos = query("SELECT COALESCE(MAX(position), -1) + 1 FROM boards") { it.getInt(0) }.first()
+        db.beginTransaction()
+        try {
+            val id = db.insertOrThrow("boards", null, cv("name" to name, "color" to color, "position" to pos))
+            listOf("К выполнению" to false, "В работе" to false, "Готово" to true).forEachIndexed { i, (n, done) ->
+                db.insertOrThrow("board_columns", null, cv("board_id" to id, "name" to n, "position" to i, "is_done" to done))
+            }
+            db.setTransactionSuccessful()
+            return id
+        } finally { db.endTransaction(); changed() }
+    }
+    fun updateBoard(b: Board) = exec("UPDATE boards SET name = ?, color = ?, position = ?, archived = ? WHERE id = ?", b.name, b.color, b.position, b.archived, b.id)
+    fun deleteBoard(id: Long) {
+        db.beginTransaction()
+        try {
+            db.execSQL("DELETE FROM task_subtasks WHERE task_id IN (SELECT id FROM tasks WHERE board_id = ?)", arrayOf(id))
+            db.execSQL("DELETE FROM tasks WHERE board_id = ?", arrayOf(id))
+            db.execSQL("DELETE FROM notes WHERE board_id = ?", arrayOf(id))
+            db.execSQL("DELETE FROM board_columns WHERE board_id = ?", arrayOf(id))
+            db.execSQL("DELETE FROM boards WHERE id = ?", arrayOf(id))
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction(); changed() }
+    }
+    fun columns(boardId: Long): List<BoardColumn> =
+        query("SELECT id, board_id, name, position, is_done FROM board_columns WHERE board_id = ? ORDER BY position, id", arrayOf(boardId.toString())) {
+            BoardColumn(it.getLong(0), it.getLong(1), it.getString(2), it.getInt(3), it.bool(4))
+        }
+    fun addColumn(boardId: Long, name: String): Long {
+        val pos = query("SELECT COALESCE(MAX(position), -1) + 1 FROM board_columns WHERE board_id = ?", arrayOf(boardId.toString())) { it.getInt(0) }.first()
+        return insert("board_columns", cv("board_id" to boardId, "name" to name, "position" to pos))
+    }
+    fun renameColumn(id: Long, name: String) = exec("UPDATE board_columns SET name = ? WHERE id = ?", name, id)
+    fun cardsIn(columnId: Long) = tasks(includeBoards = true).filter { it.columnId == columnId }.sortedWith(compareBy({ it.position }, { it.id }))
+    private fun columnDone(columnId: Long) = query("SELECT is_done FROM board_columns WHERE id = ?", arrayOf(columnId.toString())) { it.bool(0) }.firstOrNull() ?: false
+
+    fun addCard(boardId: Long, columnId: Long, title: String, deadline: LocalDate? = null, priority: Int = PRIORITY_MEDIUM, topicId: Long? = null): Long {
+        val pos = (cardsIn(columnId).maxOfOrNull { it.position } ?: 0.0) + 1.0
+        return addTask(Task(title = title, deadline = deadline, priority = priority, topicId = topicId, boardId = boardId,
+            columnId = columnId, position = pos, done = columnDone(columnId)))
+    }
+
+    /** Переложить карточку в колонку на место index (0 — сверху); «Готово» отмечает выполненной. */
+    fun moveCard(taskId: Long, columnId: Long, index: Int) {
+        val cards = cardsIn(columnId).filter { it.id != taskId }
+        val i = index.coerceIn(0, cards.size)
+        val before = if (i > 0) cards[i - 1].position else null
+        val after = if (i < cards.size) cards[i].position else null
+        var pos = when {
+            before == null && after == null -> 1.0
+            before == null -> after!! - 1.0
+            after == null -> before + 1.0
+            else -> (before + after) / 2
+        }
+        if (before != null && after != null && after - before < 1e-6) {
+            cards.forEachIndexed { k, c -> db.execSQL("UPDATE tasks SET position = ? WHERE id = ?", arrayOf<Any>((k + 1).toDouble(), c.id)) }
+            pos = i + 0.5
+        }
+        val t = task(taskId) ?: return
+        val done = columnDone(columnId)
+        updateTask(t.copy(columnId = columnId, position = pos, done = done, completedOn = if (done) t.completedOn ?: LocalDate.now() else null))
+    }
+
+    /** Выполнено: карточка доски переезжает в «Готово» (или обратно в первую колонку). */
+    fun completeTask(taskId: Long, done: Boolean = true) {
+        val t = task(taskId) ?: return
+        if (t.boardId != null) {
+            val cols = columns(t.boardId)
+            val target = if (done) cols.firstOrNull { it.isDone } else cols.firstOrNull { !it.isDone }
+            if (target != null) { moveCard(taskId, target.id, if (done) 0 else cardsIn(target.id).size); return }
+        }
+        updateTask(t.copy(done = done, completedOn = null))
+    }
 
     // ---------------------------------------------------------------- цели
     fun goals(): List<Goal> = query("SELECT id, title, description, target_date, done, archived, created_on, completed_on, financial, target_amount FROM goals") {
@@ -164,11 +248,14 @@ class Repo(val helper: Db) {
     private val nowFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
     private fun nowIso() = LocalDateTime.now().format(nowFmt)
 
-    fun notes(): List<Note> = query("SELECT id, title, body, pinned, created_at, updated_at, folder_id FROM notes") {
-        Note(it.getLong(0), it.getString(1), it.getString(2), it.bool(3), it.getString(4), it.getString(5), it.lng(6))
+    private fun allNotes(): List<Note> = query("SELECT id, title, body, pinned, created_at, updated_at, folder_id, board_id FROM notes") {
+        Note(it.getLong(0), it.getString(1), it.getString(2), it.bool(3), it.getString(4), it.getString(5), it.lng(6), it.lng(7))
     }
-    fun note(id: Long) = notes().firstOrNull { it.id == id }
-    fun addNote(folderId: Long? = null): Long { val n = nowIso(); return insert("notes", cv("title" to "", "body" to "", "created_at" to n, "updated_at" to n, "folder_id" to folderId)) }
+    /** Обычные заметки; заметки досок — boardNotes(). */
+    fun notes(): List<Note> = allNotes().filter { it.boardId == null }
+    fun boardNotes(boardId: Long): List<Note> = allNotes().filter { it.boardId == boardId }
+    fun note(id: Long) = allNotes().firstOrNull { it.id == id }
+    fun addNote(folderId: Long? = null, boardId: Long? = null): Long { val n = nowIso(); return insert("notes", cv("title" to "", "body" to "", "created_at" to n, "updated_at" to n, "folder_id" to folderId, "board_id" to boardId)) }
     fun updateNote(id: Long, title: String, body: String) = exec("UPDATE notes SET title = ?, body = ?, updated_at = ? WHERE id = ?", title, body, nowIso(), id)
     fun setNotePinned(id: Long, pinned: Boolean) = exec("UPDATE notes SET pinned = ? WHERE id = ?", pinned, id)
     fun moveNote(id: Long, folderId: Long?) = exec("UPDATE notes SET folder_id = ? WHERE id = ?", folderId, id)

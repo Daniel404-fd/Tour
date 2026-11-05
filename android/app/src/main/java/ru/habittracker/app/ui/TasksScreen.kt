@@ -164,6 +164,7 @@ fun TasksScreen(nav: Nav) {
                 }
             }
             items(shown, key = { it.id }) { task ->
+                Box(Modifier.animateItem()) {    // строки плавно уезжают и появляются, а не «прыгают»
                 SwipeToComplete(task, onToggle = {
                     val nowDone = !task.done
                     repo.updateTask(task.copy(done = nowDone, completedOn = null))
@@ -177,6 +178,7 @@ fun TasksScreen(nav: Nav) {
                 TaskRow(task, byId[task.topicId], today, subs[task.id] ?: emptyList(), task.id in expanded,
                     onToggleExpand = { expanded = if (task.id in expanded) expanded - task.id else expanded + task.id },
                     onOpen = { editing = task })
+                }
                 }
                 HorizontalDivider(color = t.border, modifier = Modifier.padding(start = 60.dp))
             }
@@ -406,6 +408,7 @@ fun TaskEditor(task: Task, topics: List<Topic>, onClose: () -> Unit) {
                     topicId = topicId, done = done, completedOn = if (done && task.done) task.completedOn else null)
                 val id = if (task.id == 0L) repo.addTask(upd) else { repo.updateTask(upd); task.id }
                 repo.applySubtasks(id, drafts)
+                if (task.boardId != null && done != task.done) repo.completeTask(id, done)   // карточка — в «Готово» или обратно
                 onClose()
             }) { Text("Сохранить") }
         },

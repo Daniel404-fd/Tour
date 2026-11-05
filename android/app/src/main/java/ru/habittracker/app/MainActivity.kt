@@ -11,6 +11,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.ViewKanban
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -39,6 +41,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import ru.habittracker.app.ui.BoardsScreen
 import ru.habittracker.app.ui.CalendarScreen
 import ru.habittracker.app.ui.HabitsScreen
 import ru.habittracker.app.ui.HomeScreen
@@ -68,6 +71,7 @@ val TABS = listOf(
     Tab("calendar", "Календарь", Icons.Outlined.CalendarMonth),
     Tab("habits", "Привычки", Icons.Outlined.GridView),
     Tab("tasks", "Задачи", Icons.Outlined.Checklist),
+    Tab("boards", "Доски", Icons.Outlined.ViewKanban),
     Tab("more", "Ещё", Icons.Outlined.MoreHoriz),
 )
 
@@ -79,6 +83,8 @@ class Nav(tab: String) {
     var noteId by mutableStateOf<Long?>(null)
     var calendarDay by mutableStateOf<LocalDate?>(null)
     var taskId by mutableStateOf<Long?>(null)
+    var boardId by mutableStateOf<Long?>(null)
+    var cardId by mutableStateOf<Long?>(null)
 
     fun go(key: String) {
         when (key) {
@@ -115,13 +121,22 @@ fun Root(start: String) {
             }
         }
     }) { pad ->
-        Box(Modifier.fillMaxSize().padding(pad)) {
-            when (nav.tab) {
-                "home" -> HomeScreen(nav)
-                "calendar" -> CalendarScreen(nav)
-                "habits" -> HabitsScreen()
-                "tasks" -> TasksScreen(nav)
-                else -> MoreScreen(nav)
+        // плавная смена разделов: новый проявляется, старый быстро гаснет
+        androidx.compose.animation.AnimatedContent(nav.tab, Modifier.fillMaxSize().padding(pad), label = "tab",
+            transitionSpec = {
+                (androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(180)) +
+                    androidx.compose.animation.slideInVertically(androidx.compose.animation.core.tween(180)) { it / 40 }) togetherWith
+                    androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(90))
+            }) { tab ->
+            Box(Modifier.fillMaxSize()) {
+                when (tab) {
+                    "home" -> HomeScreen(nav)
+                    "calendar" -> CalendarScreen(nav)
+                    "habits" -> HabitsScreen()
+                    "tasks" -> TasksScreen(nav)
+                    "boards" -> BoardsScreen(nav)
+                    else -> MoreScreen(nav)
+                }
             }
         }
     }

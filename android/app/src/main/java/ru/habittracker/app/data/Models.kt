@@ -20,7 +20,12 @@ data class Task(
     val id: Long = 0, val title: String, val description: String = "", val deadline: LocalDate? = null,
     val priority: Int = PRIORITY_MEDIUM, val done: Boolean = false, val completedOn: LocalDate? = null,
     val archived: Boolean = false, val topicId: Long? = null,
+    /** Карточка доски (канбан): в обычном списке задач её нет. */
+    val boardId: Long? = null, val columnId: Long? = null, val position: Double = 0.0,
 )
+
+data class Board(val id: Long, val name: String, val color: String, val position: Int = 0, val archived: Boolean = false)
+data class BoardColumn(val id: Long, val boardId: Long, val name: String, val position: Int, val isDone: Boolean)
 
 data class Goal(
     val id: Long = 0, val title: String, val description: String = "", val targetDate: LocalDate? = null,
@@ -41,7 +46,7 @@ data class NoteFolder(val id: Long, val name: String)
 
 data class Note(
     val id: Long, val title: String, val body: String, val pinned: Boolean, val createdAt: String,
-    val updatedAt: String, val folderId: Long?,
+    val updatedAt: String, val folderId: Long?, val boardId: Long? = null,
 ) {
     val displayTitle: String
         get() = title.trim().ifEmpty { body.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() }?.take(60) ?: "Без названия" }

@@ -43,6 +43,15 @@ class SyncInteropTest {
         val ev = repo.events().first { it.title == "Йога" }
         assertEquals(listOf(0, 2), ev.weekdays)
         assertEquals(1, repo.calendars().size)                 // основной календарь не задвоился
+        val b = repo.boards().single()
+        assertEquals("Работа 1", b.name)
+        val cols = repo.columns(b.id)
+        assertEquals(listOf("К выполнению", "В работе", "Готово"), cols.map { it.name })
+        val card = repo.boardTasks(b.id).single()
+        assertEquals("Ревью договора" to cols[1].id, card.title to card.columnId)
+        assertTrue(repo.tasks().none { it.boardId != null })     // в обычный список карточки не попадают
+        assertEquals(listOf("Контакты"), repo.boardNotes(b.id).map { it.title })
+        assertTrue(repo.notes().none { it.title == "Контакты" })
         assertEquals(repo.calendars()[0].id, ev.calendarId)
 
         // повторное слияние ничего не меняет
@@ -83,6 +92,28 @@ class SyncInteropTest {
     }
 
     @Test
+    fun boardsMoveAndComplete() {
+        val repo = newRepo()
+        val b = repo.addBoard("Работа", "#1D4ED8")
+        val (todo, doing, done) = repo.columns(b)
+        val a = repo.addCard(b, todo.id, "A"); val bb = repo.addCard(b, todo.id, "B"); val c = repo.addCard(b, todo.id, "C")
+        repo.moveCard(c, todo.id, 0)
+        assertEquals(listOf("C", "A", "B"), repo.cardsIn(todo.id).map { it.title })
+        repo.moveCard(bb, done.id, 0)
+        assertTrue(repo.task(bb)!!.done)
+        repo.moveCard(bb, doing.id, 0)
+        assertTrue(!repo.task(bb)!!.done)
+        repo.completeTask(a)
+        assertEquals(done.id, repo.task(a)!!.columnId)
+        repo.completeTask(a, false)
+        assertEquals(todo.id, repo.task(a)!!.columnId)
+        repeat(60) { repo.moveCard(c, todo.id, 1); repo.moveCard(c, todo.id, 0) }
+        assertEquals(listOf("C", "A"), repo.cardsIn(todo.id).map { it.title })
+        repo.deleteBoard(b)
+        assertTrue(repo.tasks(includeBoards = true).isEmpty() && repo.boards().isEmpty())
+    }
+
+    @Test
     fun customColorsStayReadable() {
         for (dark in listOf(false, true)) for (c in listOf("#FFD700", "#000000", "#BE185D", "#0F6E6A")) {
             val t = ru.habittracker.app.ui.derive(if (dark) ru.habittracker.app.ui.DarkTokens else ru.habittracker.app.ui.LightTokens, dark, c, c)
@@ -111,6 +142,11 @@ class SyncInteropTest {
         val n = repo.addNote(); repo.updateNote(n, "С телефона", "Текст")
         repo.addEvent(Event(title = "Врач", start = LocalDateTime.of(2026, 3, 2, 10, 0), end = LocalDateTime.of(2026, 3, 2, 11, 0),
             calendarId = repo.calendars()[0].id, reminder = 30))
+        val b = repo.addBoard("Фриланс", "#7E22CE")
+        val cols = repo.columns(b)
+        val card = repo.addCard(b, cols[0].id, "Логотип")
+        repo.moveCard(card, cols[2].id, 0)
+        val bn = repo.addNote(boardId = b); repo.updateNote(bn, "Бриф", "")
         val g = repo.addGoal(Goal(title = "Машина", financial = true, targetAmount = 500000.0))
         repo.addContribution(g, 1000.0)
         val out = File(System.getProperty("interop.out") ?: "build/interop/android-payload.json.gz")
