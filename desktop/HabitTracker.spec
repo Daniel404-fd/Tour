@@ -37,16 +37,26 @@ a.datas = [d for d in a.datas if _keep(d)]
 
 pyz = PYZ(a.pure)
 
+# Сборка «папкой» (onedir), а не одним файлом: одиночный .exe при каждом запуске распаковывал
+# ~150 МБ библиотек во временную папку — это медленно и ломалось, если антивирус или нехватка места
+# мешали распаковке («Failed to extract PySide6\\Qt6Charts.dll»). Папку ставит установщик (installer.iss).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="HabitTracker",
     icon="packaging/icon.ico",
     version="packaging/version_info.txt",
     console=False,
     upx=False,
-    runtime_tmpdir=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="HabitTracker",
 )

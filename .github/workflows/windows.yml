@@ -24,15 +24,40 @@ jobs:
       - run: pip install -r requirements.txt -r requirements-dev.txt
       - run: pytest -q
       - run: pyinstaller --noconfirm --clean HabitTracker.spec
+      - name: Проверка сборки — программа запускается и сама закрывается
+        shell: pwsh
+        run: |
+          $p = Start-Process dist\HabitTracker\HabitTracker.exe -ArgumentList "--selftest" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "selftest exit code $($p.ExitCode)" }
+      - name: Установщик (Inno Setup)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue)) {
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+            $env:Path += ";${env:ProgramFiles(x86)}\Inno Setup 6"
+          }
+          $ver = (Select-String -Path tracker\paths.py -Pattern 'APP_VERSION = "(.+)"').Matches[0].Groups[1].Value
+          iscc /DAppVersion=$ver packaging\installer.iss
+          Compress-Archive -Path dist\HabitTracker\* -DestinationPath dist\HabitTracker-portable.zip
+          Get-FileHash dist\HabitTracker-Setup.exe -Algorithm SHA256 | Format-List
       - uses: actions/upload-artifact@v4
         with:
           name: HabitTracker-windows
-          path: desktop/dist/HabitTracker.exe
+          path: |
+            desktop/dist/HabitTracker-Setup.exe
+            desktop/dist/HabitTracker-portable.zip
       - name: Выложить в релиз «Последняя версия»
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Последняя версия
-          body: Файлы собираются автоматически при каждом изменении. HabitTracker.apk — для телефона, HabitTracker.exe — для Windows.
-          files: desktop/dist/HabitTracker.exe
+          body: |
+            Файлы собираются автоматически при каждом изменении.
+            HabitTracker-Setup.exe — установщик для Windows (без прав администратора; данные не трогает).
+            HabitTracker-portable.zip — та же программа без установки: распакуйте папку и запустите HabitTracker.exe.
+            HabitTracker.apk — для телефона.
+          files: |
+            desktop/dist/HabitTracker-Setup.exe
+            desktop/dist/HabitTracker-portable.zip

@@ -52,7 +52,36 @@ def _install_crash_handler() -> None:
     sys.excepthook = handler
 
 
+def _selftest(app) -> int:
+    """Проверка собранной программы (запускается в CI): все разделы открываются, PDF и графики на месте."""
+    import tempfile
+    from pathlib import Path
+    from .session import Session
+    from .ui.main_window import MainWindow, SECTIONS
+    from PySide6.QtPdf import QPdfDocument  # noqa: F401  — просмотр PDF во вложениях
+    from PySide6.QtCharts import QChart  # noqa: F401
+    theme.install(app, None)
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Session.open_plain(Path(tmp) / "d")
+        w = MainWindow(s)
+        for key, _, _ in SECTIONS:
+            w.navigate(key)
+            app.processEvents()
+        w.close()
+        s.db.close()
+    print("selftest ok")
+    return 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        app = QApplication(sys.argv)
+        try:
+            return _selftest(app)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return 1
     _set_windows_app_id()
     _install_crash_handler()
     app = QApplication(sys.argv)
